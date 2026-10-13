@@ -1,17 +1,17 @@
-//! torrra — a terminal BitTorrent client.
+//! downpour — a terminal BitTorrent client.
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use downpour::engine::Config;
+use downpour::session::Session;
+use downpour::{metainfo, platform, session, stats, ui};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use torrra::engine::Config;
-use torrra::session::Session;
-use torrra::{metainfo, platform, session, stats, ui};
 
 #[derive(Parser)]
 #[command(
-    name = "torrra",
+    name = "downpour",
     version,
     about = "Terminal BitTorrent client",
     long_about = "Downloads .torrent files and magnet links, with DHT, PEX and a terminal interface."
@@ -104,7 +104,7 @@ fn run_all(args: Args) -> Result<()> {
     // size the blocking I/O pool, which is where piece verification runs.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_name("torrra")
+        .thread_name("downpour")
         .max_blocking_threads(16)
         .build()?;
     runtime.block_on(run(args))
@@ -448,13 +448,13 @@ mod tests {
 
     #[test]
     fn cli_accepts_the_usage_forms() {
-        let a = Args::try_parse_from(["torrra", "file.torrent"]).unwrap();
+        let a = Args::try_parse_from(["downpour", "file.torrent"]).unwrap();
         assert_eq!(a.sources, ["file.torrent"]);
         assert_eq!(a.port, 6881);
         assert!(!a.sequential);
 
         let a = Args::try_parse_from([
-            "torrra", "-o", "/tmp", "-p", "51413", "-s", "--no-dht", "m1", "m2",
+            "downpour", "-o", "/tmp", "-p", "51413", "-s", "--no-dht", "m1", "m2",
         ])
         .unwrap();
         assert_eq!(a.output, Some(PathBuf::from("/tmp")));
@@ -463,15 +463,15 @@ mod tests {
         assert_eq!(a.sources.len(), 2);
 
         // The legacy Portuguese flags keep working as hidden aliases.
-        let a =
-            Args::try_parse_from(["torrra", "--saida", "/tmp", "--sem-dht", "--simples"]).unwrap();
+        let a = Args::try_parse_from(["downpour", "--saida", "/tmp", "--sem-dht", "--simples"])
+            .unwrap();
         assert_eq!(a.output, Some(PathBuf::from("/tmp")));
         assert!(a.no_dht && a.simple);
 
         // `--info` does not need the positional source.
-        assert!(Args::try_parse_from(["torrra", "--info", "x.torrent"]).is_ok());
+        assert!(Args::try_parse_from(["downpour", "--info", "x.torrent"]).is_ok());
         // With no argument at all the interface opens empty, waiting for a magnet.
-        let empty = Args::try_parse_from(["torrra"]).unwrap();
+        let empty = Args::try_parse_from(["downpour"]).unwrap();
         assert!(empty.sources.is_empty());
         assert_eq!(empty.output, None);
     }

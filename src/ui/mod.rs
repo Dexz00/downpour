@@ -415,7 +415,7 @@ mod tests {
         let screen = render(Tab::Overview, &[]);
         assert!(screen.contains("bittorrent client"), "logo and subtitle");
         assert!(screen.contains("paste a magnet link"));
-        assert!(screen.contains("drag .torrent files onto torrra.exe"));
+        assert!(screen.contains("drag .torrent files onto downpour.exe"));
     }
 
     #[test]

@@ -6,6 +6,6 @@ use libfuzzer_sys::fuzz_target;
 // the network (KRPC, tracker responses, extension handshakes): it must
 // never panic, only return `Err`.
 fuzz_target!(|data: &[u8]| {
-    let _ = torrra::bencode::decode(data);
-    let _ = torrra::bencode::decode_prefix(data);
+    let _ = downpour::bencode::decode(data);
+    let _ = downpour::bencode::decode_prefix(data);
 });

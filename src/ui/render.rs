@@ -143,16 +143,16 @@ pub(super) fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 /// Block logo, drawn by hand to fit narrow terminals.
 const LOGO: [&str; 5] = [
-    "▀█▀ █▀█ █▀█ █▀█ █▀█ ▄▀█",
-    " █  █ █ █▀▄ █▀▄ █▀▄ █▀█",
-    " ▀  ▀▀▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀",
+    "█▀▄ █▀█ █ █ █ █ █▀█ █▀█ █ █ █▀█",
+    "█ █ █ █ █ █ █▄█ █▀  █ █ █ █ █▀▄",
+    "█▄▀ ▀▀▀ ▀▄▀ █ ▀ ▀   ▀▀▀ ▀▀▀ ▀ ▀",
     "",
     "bittorrent client",
 ];
 
 /// Screen shown while there is no torrent in the session.
 fn draw_welcome(frame: &mut Frame, area: Rect) {
-    let block = frame_block(" torrra ");
+    let block = frame_block(" downpour ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height < 6 {
@@ -199,7 +199,7 @@ fn draw_welcome(frame: &mut Frame, area: Rect) {
     lines.push(Line::default());
     lines.push(
         Line::from(Span::styled(
-            "drag .torrent files onto torrra.exe",
+            "drag .torrent files onto downpour.exe",
             Style::new().fg(MUTED),
         ))
         .centered(),

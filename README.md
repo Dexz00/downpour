@@ -1,4 +1,6 @@
-# torrra
+# downpour
+
+[![CI](https://github.com/Dexz00/downpour/actions/workflows/ci.yml/badge.svg)](https://github.com/Dexz00/downpour/actions/workflows/ci.yml)
 
 A terminal BitTorrent client written from scratch in Rust — protocol, DHT,
 piece selection and interface, without depending on any torrent library.
@@ -6,8 +8,8 @@ piece selection and interface, without depending on any torrent library.
 It reads `.torrent` files and magnet links.
 
 ```
-torrra ubuntu.torrent -o ~/Downloads
-torrra "magnet:?xt=urn:btih:..." -o ~/Downloads
+downpour ubuntu.torrent -o ~/Downloads
+downpour "magnet:?xt=urn:btih:..." -o ~/Downloads
 ```
 
 ## What is implemented
@@ -35,13 +37,13 @@ SHA-1 verification of every piece before it is written.
 cargo build --release
 ```
 
-The binary lands in `target/release/torrra`. On Windows it already comes
+The binary lands in `target/release/downpour`. On Windows it already comes
 with the icon and version block embedded — a single file, with nothing
 around it to distribute.
 
 ## On Windows: drag and drop
 
-The `torrra.exe` itself is the drop target:
+The `downpour.exe` itself is the drop target:
 
 - **drag** one or several `.torrent` files onto it — it downloads all of
   them in the same session;
@@ -60,7 +62,7 @@ honored.)
 ## Usage
 
 ```
-torrra <TORRENT|MAGNET>... [options]
+downpour <TORRENT|MAGNET>... [options]
 
   -o, --output <DIR>         destination directory (default: Downloads when
                              opened from a file manager, else the current dir)
@@ -98,10 +100,10 @@ The previous Portuguese flag names (`--saida`, `--porta`, `--sequencial`,
 
 ### Diagnostics
 
-`TORRRA_LOG` writes details to stderr, filtered by topic:
+`DOWNPOUR_LOG` writes details to stderr, filtered by topic:
 
 ```
-TORRRA_LOG=peer,dht torrra x.torrent 2> log.txt
+DOWNPOUR_LOG=peer,dht downpour x.torrent 2> log.txt
 ```
 
 Topics: `peer`, `peers`, `dht`, `state`. `1` enables all of them.
@@ -135,7 +137,7 @@ ui/            terminal interface
   mod.rs       app state, event and key handling
   render.rs    drawing every tab from a Snapshot
 build.rs       icon and version block of the Windows executable
-assets/        the logo and the script that converts it into torrra.ico
+assets/        the logo and the script that converts it into downpour.ico
 fuzz/          cargo-fuzz targets for the untrusted-input parsers
 .github/       CI: fmt, clippy -D warnings, tests and release build
 ```

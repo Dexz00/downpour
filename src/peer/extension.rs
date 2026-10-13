@@ -40,7 +40,7 @@ impl ExtensionHandshake {
         ExtensionHandshake {
             ids,
             metadata_size,
-            client: Some(format!("torrra/{}", env!("CARGO_PKG_VERSION"))),
+            client: Some(format!("downpour/{}", env!("CARGO_PKG_VERSION"))),
             reqq: Some(250),
             port: Some(port),
         }
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(parsed.id_of("ut_pex"), Some(UT_PEX_ID));
         assert_eq!(parsed.metadata_size, Some(4096));
         assert_eq!(parsed.port, Some(6881));
-        assert!(parsed.client.unwrap().starts_with("torrra/"));
+        assert!(parsed.client.unwrap().starts_with("downpour/"));
 
         let private = ExtensionHandshake::ours(None, false, 6881);
         assert!(

@@ -1,7 +1,7 @@
-//! torrra — a terminal BitTorrent client, written from scratch.
+//! downpour — a terminal BitTorrent client, written from scratch.
 //!
 //! This library crate holds the whole implementation (protocol, DHT, piece
-//! selection, storage, terminal UI); the `torrra` binary is a thin CLI front
+//! selection, storage, terminal UI); the `downpour` binary is a thin CLI front
 //! end over [`session::Session`].
 
 pub mod bencode;

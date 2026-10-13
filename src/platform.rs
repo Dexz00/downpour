@@ -58,7 +58,7 @@ mod windows {
     /// console starts in the legacy code page and the interface's accents
     /// and blocks come out scrambled.
     pub fn prepare_console() {
-        let title: Vec<u16> = "Torrent 20X".encode_utf16().chain([0]).collect();
+        let title: Vec<u16> = "Downpour".encode_utf16().chain([0]).collect();
         unsafe {
             SetConsoleOutputCP(UTF8);
             SetConsoleCP(UTF8);

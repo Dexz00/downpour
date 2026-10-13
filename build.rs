@@ -19,7 +19,7 @@ const GROUP_ID: u16 = 1;
 const LANGUAGE: u16 = 0x0409;
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets/torrra.ico");
+    println!("cargo:rerun-if-changed=assets/downpour.ico");
     println!("cargo:rerun-if-changed=build.rs");
 
     // MSVC only: mingw's `ld` does not accept `.res` without `windres`.
@@ -29,10 +29,10 @@ fn main() {
         return;
     }
 
-    let icon = Path::new("assets/torrra.ico");
+    let icon = Path::new("assets/downpour.ico");
     if !icon.exists() {
         println!(
-            "cargo:warning=assets/torrra.ico does not exist; the executable will have no icon"
+            "cargo:warning=assets/downpour.ico does not exist; the executable will have no icon"
         );
         return;
     }
@@ -40,17 +40,19 @@ fn main() {
     let ico = match fs::read(icon) {
         Ok(bytes) => bytes,
         Err(e) => {
-            println!("cargo:warning=could not read assets/torrra.ico ({e}); building without icon");
+            println!(
+                "cargo:warning=could not read assets/downpour.ico ({e}); building without icon"
+            );
             return;
         }
     };
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
     let Some(res) = build_res(&ico, &version) else {
-        println!("cargo:warning=assets/torrra.ico is malformed; building without icon");
+        println!("cargo:warning=assets/downpour.ico is malformed; building without icon");
         return;
     };
 
-    let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("torrra.res");
+    let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("downpour.res");
     if let Err(e) = fs::write(&out, res) {
         println!("cargo:warning=could not write the .res file ({e}); building without icon");
         return;
@@ -195,12 +197,12 @@ fn version_info(version: &str) -> Vec<u8> {
     let short_version = format!("{major}.{minor}.{patch}");
     let long_version = format!("{major}.{minor}.{patch}.{build}");
     let strings = [
-        ("CompanyName", "torrra"),
-        ("FileDescription", "Torrent 20X — BitTorrent client"),
+        ("CompanyName", "downpour"),
+        ("FileDescription", "Downpour — BitTorrent client"),
         ("FileVersion", long_version.as_str()),
-        ("InternalName", "torrra"),
-        ("OriginalFilename", "torrra.exe"),
-        ("ProductName", "Torrent 20X"),
+        ("InternalName", "downpour"),
+        ("OriginalFilename", "downpour.exe"),
+        ("ProductName", "Downpour"),
         ("ProductVersion", short_version.as_str()),
     ];
 

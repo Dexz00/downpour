@@ -137,11 +137,21 @@ fn cache_path() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("torrra"))
+    Some(base.join("downpour"))
 }
 
 fn load_dht_nodes() -> Vec<(Id20, SocketAddr)> {
-    let Some(file) = cache_path().map(|d| d.join("dht-nodes.txt")) else {
+    // Fall back to the pre-rename cache directory (`torrra`) so saved nodes
+    // survive the rename to downpour.
+    let file = cache_path()
+        .map(|d| d.join("dht-nodes.txt"))
+        .filter(|f| f.exists())
+        .or_else(|| {
+            cache_path()
+                .and_then(|d| d.parent().map(|p| p.join("torrra")))
+                .map(|d| d.join("dht-nodes.txt"))
+        });
+    let Some(file) = file else {
         return Vec::new();
     };
     let Ok(text) = std::fs::read_to_string(file) else {
@@ -245,7 +255,7 @@ mod tests {
     #[ignore]
     async fn real_pause_resume_cycle() {
         let path = std::env::var("TORRENT").expect("set TORRENT=path.torrent");
-        let dest_dir = std::env::temp_dir().join("torrra-pause");
+        let dest_dir = std::env::temp_dir().join("downpour-pause");
         let _ = std::fs::remove_dir_all(&dest_dir);
 
         let s = Session::start(Config {

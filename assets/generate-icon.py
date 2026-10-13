@@ -1,4 +1,4 @@
-"""Generate `torrra.ico` from `logo.png`.
+"""Generate `downpour.ico` from `logo.png`.
 
     python assets/generate-icon.py
 
@@ -19,7 +19,7 @@ import struct
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE / "logo.png"
-DEST = HERE / "torrra.ico"
+DEST = HERE / "downpour.ico"
 
 # Coordinates in the original logo (1536x1024).
 WIDE = (488, 148, 1018, 548)    # the whole folder: tab, arrow and symbol

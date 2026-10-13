@@ -557,6 +557,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "downpour"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "crossterm",
+ "hex",
+ "percent-encoding",
+ "rand 0.10.3",
+ "ratatui",
+ "reqwest",
+ "sha1",
+ "tokio",
+]
+
+[[package]]
+name = "downpour-fuzz"
+version = "0.0.0"
+dependencies = [
+ "downpour",
+ "libfuzzer-sys",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2475,31 +2500,6 @@ checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
  "rustls",
  "tokio",
-]
-
-[[package]]
-name = "torrra"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "clap",
- "crossterm",
- "hex",
- "percent-encoding",
- "rand 0.10.3",
- "ratatui",
- "reqwest",
- "sha1",
- "tokio",
-]
-
-[[package]]
-name = "torrra-fuzz"
-version = "0.0.0"
-dependencies = [
- "libfuzzer-sys",
- "torrra",
 ]
 
 [[package]]

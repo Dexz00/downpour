@@ -1,15 +1,21 @@
 //! Optional diagnostics.
 //!
-//! Enabled by `TORRRA_LOG=1` (or `=peer`, `=dht`, `=tracker`, `=state` to
+//! Enabled by `DOWNPOUR_LOG=1` (or `=peer`, `=dht`, `=tracker`, `=state` to
 //! filter by topic). Writes to stderr, which under the TUI can be redirected
-//! to a file: `torrra x.torrent 2> log.txt`.
+//! to a file: `downpour x.torrent 2> log.txt`.
 
 use std::sync::OnceLock;
 
 static FILTER: OnceLock<Option<String>> = OnceLock::new();
 
 fn filter() -> &'static Option<String> {
-    FILTER.get_or_init(|| std::env::var("TORRRA_LOG").ok().filter(|v| v != "0"))
+    FILTER.get_or_init(|| {
+        // `TORRRA_LOG` is the pre-rename name; keep honoring it.
+        std::env::var("DOWNPOUR_LOG")
+            .or_else(|_| std::env::var("TORRRA_LOG"))
+            .ok()
+            .filter(|v| v != "0")
+    })
 }
 
 /// Should this topic be logged?
@@ -46,7 +52,7 @@ mod tests {
     #[test]
     fn filter_is_off_by_default() {
         // The test runs without the variable set in a normal environment.
-        if std::env::var("TORRRA_LOG").is_err() {
+        if std::env::var("DOWNPOUR_LOG").is_err() {
             assert!(!active("peer"));
         }
     }

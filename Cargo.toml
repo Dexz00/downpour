@@ -1,5 +1,5 @@
 [package]
-name = "torrra"
+name = "downpour"
 version = "0.1.0"
 edition = "2024"
 description = "Terminal BitTorrent client written from scratch in Rust"

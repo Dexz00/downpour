@@ -463,7 +463,7 @@ mod network_tests {
             port: 6881,
             num_want: 200,
             client: reqwest::Client::builder()
-                .user_agent("torrra/0.1.0")
+                .user_agent("downpour/0.1.0")
                 .timeout(Duration::from_secs(30))
                 .build()
                 .unwrap(),

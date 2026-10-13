@@ -545,6 +545,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "downpour"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "crossterm",
+ "hex",
+ "percent-encoding",
+ "rand 0.10.2",
+ "ratatui",
+ "reqwest",
+ "sha1",
+ "tokio",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2424,23 +2441,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
- "tokio",
-]
-
-[[package]]
-name = "torrra"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "clap",
- "crossterm",
- "hex",
- "percent-encoding",
- "rand 0.10.2",
- "ratatui",
- "reqwest",
- "sha1",
  "tokio",
 ]
 
