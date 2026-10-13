@@ -1,4 +1,4 @@
-//! KRPC — o protocolo do DHT: bencode sobre UDP (BEP-5).
+//! KRPC - the DHT protocol: bencode over UDP (BEP-5).
 
 use crate::bencode::{self, Value};
 use crate::id::Id20;
@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-/// Um nó do DHT no formato compacto: 20 bytes de id + endereço.
+/// A DHT node in compact form: 20 bytes of id + address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeInfo {
     pub id: Id20,
@@ -14,7 +14,9 @@ pub struct NodeInfo {
 }
 
 pub fn parse_nodes(buf: &[u8]) -> Vec<NodeInfo> {
-    buf.chunks_exact(26)
+    buf.as_chunks::<26>()
+        .0
+        .iter()
         .filter_map(|c| {
             let id = Id20::from_slice(&c[..20]).ok()?;
             let addr = SocketAddr::new(
@@ -27,7 +29,9 @@ pub fn parse_nodes(buf: &[u8]) -> Vec<NodeInfo> {
 }
 
 pub fn parse_nodes6(buf: &[u8]) -> Vec<NodeInfo> {
-    buf.chunks_exact(38)
+    buf.as_chunks::<38>()
+        .0
+        .iter()
         .filter_map(|c| {
             let id = Id20::from_slice(&c[..20]).ok()?;
             let mut octets = [0u8; 16];
@@ -53,7 +57,7 @@ pub fn encode_nodes(nodes: &[NodeInfo]) -> Vec<u8> {
     out
 }
 
-/// Consultas que enviamos e recebemos.
+/// Queries that we send and receive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Query {
     Ping {
@@ -72,7 +76,7 @@ pub enum Query {
         info_hash: Id20,
         port: u16,
         token: Vec<u8>,
-        /// Quando ligado, o nó pede que se use a porta de origem do UDP.
+        /// When set, the node asks that the UDP source port be used.
         implied_port: bool,
     },
 }
@@ -137,15 +141,18 @@ impl Query {
                 id,
                 info_hash: id_at(a, "info_hash")?,
                 port: a.int_at("port").unwrap_or(0).clamp(0, 65535) as u16,
-                token: a.bytes_at("token").context("announce_peer sem token")?.to_vec(),
+                token: a
+                    .bytes_at("token")
+                    .context("announce_peer without token")?
+                    .to_vec(),
                 implied_port: a.int_at("implied_port").unwrap_or(0) != 0,
             },
-            outro => bail!("consulta DHT desconhecida: {outro}"),
+            other => bail!("unknown DHT query: {other}"),
         })
     }
 }
 
-/// Resposta a uma consulta.
+/// Response to a query.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Response {
     pub id: Id20,
@@ -188,20 +195,29 @@ impl Message {
                 root.insert(b"y".to_vec(), Value::bytes("q"));
                 root.insert(b"q".to_vec(), Value::bytes(query.method()));
                 root.insert(b"a".to_vec(), Value::Dict(query.args()));
-                // Identifica o cliente; puramente informativo.
+                // Identifies the client; purely informational.
                 root.insert(b"v".to_vec(), Value::bytes("TR01"));
             }
             Message::Response { response, .. } => {
                 let mut r: BTreeMap<Vec<u8>, Value> = BTreeMap::new();
                 r.insert(b"id".to_vec(), Value::bytes(*response.id.as_bytes()));
                 if !response.nodes.is_empty() {
-                    r.insert(b"nodes".to_vec(), Value::Bytes(encode_nodes(&response.nodes)));
+                    r.insert(
+                        b"nodes".to_vec(),
+                        Value::Bytes(encode_nodes(&response.nodes)),
+                    );
                 }
                 if !response.values.is_empty() {
                     let (v4, _) = crate::compact::encode(&response.values);
                     r.insert(
                         b"values".to_vec(),
-                        Value::List(v4.chunks_exact(6).map(Value::bytes).collect()),
+                        Value::List(
+                            v4.as_chunks::<6>()
+                                .0
+                                .iter()
+                                .map(|c| Value::bytes(c.as_slice()))
+                                .collect(),
+                        ),
                     );
                 }
                 if let Some(token) = &response.token {
@@ -222,15 +238,17 @@ impl Message {
     }
 
     pub fn decode(buf: &[u8]) -> Result<Message> {
-        let root = bencode::decode(buf).context("pacote DHT não é bencode")?.value;
+        let root = bencode::decode(buf)
+            .context("DHT packet is not bencode")?
+            .value;
         let transaction = root
             .bytes_at("t")
-            .context("pacote DHT sem transaction id")?
+            .context("DHT packet without transaction id")?
             .to_vec();
 
         match root.str_at("y").as_deref() {
             Some("q") => {
-                let method = root.str_at("q").context("consulta sem método")?;
+                let method = root.str_at("q").context("query without method")?;
                 let args = root.require("a")?;
                 Ok(Message::Query {
                     transaction,
@@ -242,7 +260,7 @@ impl Message {
                 let mut nodes = r.bytes_at("nodes").map(parse_nodes).unwrap_or_default();
                 nodes.extend(r.bytes_at("nodes6").map(parse_nodes6).unwrap_or_default());
 
-                // `values` é uma lista de strings de 6 bytes, uma por peer.
+                // `values` is a list of 6-byte strings, one per peer.
                 let values = r
                     .list_at("values")
                     .map(|list| {
@@ -271,19 +289,19 @@ impl Message {
                     message: e
                         .get(1)
                         .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| "erro sem descrição".into()),
+                        .unwrap_or_else(|| "error without description".into()),
                 })
             }
-            outro => bail!("pacote DHT com tipo `y` inesperado: {outro:?}"),
+            other => bail!("DHT packet with unexpected `y` type: {other:?}"),
         }
     }
 }
 
-fn id_at(v: &Value, chave: &str) -> Result<Id20> {
+fn id_at(v: &Value, key: &str) -> Result<Id20> {
     let raw = v
-        .bytes_at(chave)
-        .with_context(|| format!("campo `{chave}` ausente"))?;
-    Id20::from_slice(raw).with_context(|| format!("campo `{chave}` não tem 20 bytes"))
+        .bytes_at(key)
+        .with_context(|| format!("field `{key}` missing"))?;
+    Id20::from_slice(raw).with_context(|| format!("field `{key}` is not 20 bytes"))
 }
 
 #[cfg(test)]
@@ -295,19 +313,19 @@ mod tests {
     }
 
     #[test]
-    fn consultas_round_trip() {
+    fn queries_round_trip() {
         let id = Id20::random();
-        let alvo = Id20::random();
+        let target = Id20::random();
         for query in [
             Query::Ping { id },
-            Query::FindNode { id, target: alvo },
+            Query::FindNode { id, target },
             Query::GetPeers {
                 id,
-                info_hash: alvo,
+                info_hash: target,
             },
             Query::AnnouncePeer {
                 id,
-                info_hash: alvo,
+                info_hash: target,
                 port: 6881,
                 token: b"abcd".to_vec(),
                 implied_port: true,
@@ -318,17 +336,20 @@ mod tests {
                 query: query.clone(),
             };
             match round_trip(msg) {
-                Message::Query { query: lido, transaction } => {
-                    assert_eq!(lido, query);
+                Message::Query {
+                    query: parsed,
+                    transaction,
+                } => {
+                    assert_eq!(parsed, query);
                     assert_eq!(transaction, b"aa");
                 }
-                outro => panic!("esperava Query, veio {outro:?}"),
+                other => panic!("expected Query, got {other:?}"),
             }
         }
     }
 
     #[test]
-    fn resposta_com_nos_e_peers() {
+    fn response_with_nodes_and_peers() {
         let resp = Response {
             id: Id20::random(),
             nodes: vec![NodeInfo {
@@ -344,12 +365,12 @@ mod tests {
         };
         match round_trip(msg) {
             Message::Response { response, .. } => assert_eq!(response, resp),
-            outro => panic!("esperava Response, veio {outro:?}"),
+            other => panic!("expected Response, got {other:?}"),
         }
     }
 
     #[test]
-    fn erro_round_trip() {
+    fn error_round_trip() {
         let msg = Message::Error {
             transaction: b"t1".to_vec(),
             code: 201,
@@ -359,16 +380,16 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_pacotes_invalidos() {
+    fn rejects_invalid_packets() {
         assert!(Message::decode(b"xyz").is_err());
-        // Consulta sem o campo `a`.
+        // Query without the `a` field.
         assert!(Message::decode(b"d1:t2:aa1:y1:q1:q4:pinge").is_err());
-        // Resposta com id de tamanho errado.
+        // Response with an id of the wrong size.
         assert!(Message::decode(b"d1:rd2:id3:abce1:t2:aa1:y1:re").is_err());
     }
 
     #[test]
-    fn nos_compactos_ida_e_volta() {
+    fn compact_nodes_round_trip() {
         let nodes = vec![
             NodeInfo {
                 id: Id20([1; 20]),
@@ -380,7 +401,7 @@ mod tests {
             },
         ];
         assert_eq!(parse_nodes(&encode_nodes(&nodes)), nodes);
-        // Restos incompletos são ignorados em vez de derrubar o parsing.
+        // Incomplete trailing bytes are ignored instead of breaking parsing.
         assert!(parse_nodes(&[0u8; 25]).is_empty());
     }
 }

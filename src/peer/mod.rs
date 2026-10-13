@@ -1,9 +1,9 @@
-//! Conexão com um peer.
+//! Connection to a peer.
 //!
-//! Cada peer é uma task independente. Ela não decide nada sobre o download —
-//! só traduz o protocolo em eventos para o engine e executa os comandos que
-//! recebe de volta. Toda a política (o que pedir, quem estrangular) mora no
-//! engine, que é quem enxerga o enxame inteiro.
+//! Each peer is an independent task. It decides nothing about the download —
+//! it only translates the protocol into events for the engine and executes
+//! the commands it receives back. All policy (what to request, whom to
+//! choke) lives in the engine, which is what sees the whole swarm.
 
 pub mod extension;
 pub mod message;
@@ -20,32 +20,32 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 
-/// Quanto esperamos por um handshake antes de desistir do peer.
+/// How long we wait for a handshake before giving up on the peer.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(12);
-/// Silêncio absoluto por esse tempo significa conexão morta.
+/// Total silence for this long means a dead connection.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(150);
-/// Intervalo de keep-alive; o padrão de fato é 2 minutos.
+/// Keep-alive interval; the de facto standard is 2 minutes.
 const KEEPALIVE: Duration = Duration::from_secs(100);
-/// Quantos pedidos de upload enfileiramos de um mesmo peer antes de cortá-lo.
+/// How many upload requests we queue from a single peer before cutting it off.
 const MAX_INCOMING_REQUESTS: usize = 500;
-/// Maior bloco que aceitamos servir.
+/// Largest block we are willing to serve.
 const MAX_SERVE_LENGTH: u32 = 128 * 1024;
 
-/// Identificador local do peer dentro do torrent (índice de slot).
+/// Local identifier of the peer within the torrent (slot index).
 pub type Slot = u32;
 
 #[derive(Debug)]
 pub enum PeerCommand {
-    /// Pedidos a enviar, em lote (pipelining).
+    /// Requests to send, batched (pipelining).
     Request(Vec<BlockRequest>),
     Cancel(BlockRequest),
     Have(u32),
-    /// `true` = estrangular o peer (parar de enviar dados a ele).
+    /// `true` = choke the peer (stop sending data to it).
     Choke(bool),
     Interested(bool),
-    /// Dados já lidos do disco, prontos para irem para o peer.
+    /// Data already read from disk, ready to go to the peer.
     SendBlock(BlockRequest, Vec<u8>),
-    /// Recusa explícita de um pedido (fast extension).
+    /// Explicit refusal of a request (fast extension).
     Reject(BlockRequest),
     RequestMetadata(usize),
     SendMetadata(MetadataMessage),
@@ -60,15 +60,15 @@ pub enum PeerEvent {
         peer_id: Id20,
         supports_dht: bool,
     },
-    /// Handshake de extensões do peer — chega logo depois do `Connected`, e
-    /// pode ser reenviado a qualquer momento para ligar/desligar extensões.
+    /// The peer's extension handshake — arrives right after `Connected`, and
+    /// may be resent at any time to enable/disable extensions.
     Extensions(Slot, Box<ExtensionHandshake>),
-    /// Bitfield cru: em um magnet ainda não sabemos quantas peças existem.
+    /// Raw bitfield: with a magnet we do not yet know how many pieces exist.
     Bitfield(Slot, Vec<u8>),
     HaveAll(Slot),
     HaveNone(Slot),
     Have(Slot, u32),
-    /// O peer nos estrangulou (`true`) ou liberou (`false`).
+    /// The peer choked us (`true`) or unchoked us (`false`).
     Choked(Slot, bool),
     Interested(Slot, bool),
     Block {
@@ -76,15 +76,15 @@ pub enum PeerEvent {
         request: BlockRequest,
         data: Vec<u8>,
     },
-    /// O peer recusou um pedido nosso (fast extension).
+    /// The peer rejected one of our requests (fast extension).
     Rejected(Slot, BlockRequest),
-    /// O peer quer um bloco nosso.
+    /// The peer wants a block from us.
     BlockRequested(Slot, BlockRequest),
     Metadata(Slot, MetadataMessage),
     Pex(PexMessage),
-    /// Porta DHT anunciada pelo peer.
+    /// DHT port announced by the peer.
     DhtPort(Slot, u16),
-    /// Bytes enviados a este peer desde o último aviso.
+    /// Bytes sent to this peer since the last report.
     Uploaded(Slot, u64),
     Disconnected(Slot, String),
 }
@@ -94,31 +94,31 @@ pub struct PeerConfig {
     pub info_hash: Id20,
     pub peer_id: Id20,
     pub listen_port: u16,
-    /// Tamanho do `info`, quando já o temos (anunciado via ut_metadata).
+    /// Size of `info`, when we already have it (announced via ut_metadata).
     pub metadata_size: Option<usize>,
-    /// Torrent privado desliga PEX e DHT.
+    /// Private torrents disable PEX and DHT.
     pub allow_pex: bool,
     pub dht: bool,
-    /// Peças que já temos. O protocolo só aceita `bitfield` como primeira
-    /// mensagem depois do handshake, então ele precisa vir pronto daqui — o
-    /// que descobrirmos depois vai por `have`.
+    /// Pieces we already have. The protocol only accepts `bitfield` as the
+    /// first message after the handshake, so it must come ready from here —
+    /// anything we learn later goes out via `have`.
     pub initial_bitfield: Option<Vec<u8>>,
 }
 
-/// Alça do engine para falar com a task de um peer.
+/// The engine's handle for talking to a peer task.
 pub struct PeerHandle {
     tx: mpsc::Sender<PeerCommand>,
 }
 
 impl PeerHandle {
-    /// Enfileira um comando. Devolve `false` se a fila do peer estourou ou a
-    /// conexão morreu — em ambos os casos o comando é descartável.
+    /// Queues a command. Returns `false` if the peer's queue is full or the
+    /// connection died — in both cases the command is disposable.
     pub fn send(&self, cmd: PeerCommand) -> bool {
         self.tx.try_send(cmd).is_ok()
     }
 }
 
-/// Conecta, faz o handshake e roda o peer até a conexão morrer.
+/// Connects, performs the handshake, and runs the peer until the connection dies.
 pub async fn spawn_outgoing(
     slot: Slot,
     addr: SocketAddr,
@@ -129,22 +129,23 @@ pub async fn spawn_outgoing(
     let (tx, rx) = mpsc::channel(256);
     let handle = PeerHandle { tx };
     tokio::spawn(async move {
-        let motivo = match timeout(connect_timeout, TcpStream::connect(addr)).await {
+        let reason = match timeout(connect_timeout, TcpStream::connect(addr)).await {
             Ok(Ok(socket)) => run(slot, socket, cfg, events.clone(), rx, None)
                 .await
                 .err()
                 .map(|e| format!("{e:#}"))
-                .unwrap_or_else(|| "encerrado".to_string()),
-            Ok(Err(e)) => format!("conexão falhou: {e}"),
-            Err(_) => "tempo esgotado ao conectar".to_string(),
+                .unwrap_or_else(|| "closed".to_string()),
+            Ok(Err(e)) => format!("connection failed: {e}"),
+            Err(_) => "timed out connecting".to_string(),
         };
-        let _ = events.send(PeerEvent::Disconnected(slot, motivo)).await;
+        let _ = events.send(PeerEvent::Disconnected(slot, reason)).await;
     });
     handle
 }
 
-/// Assume uma conexão que chegou até nós, cujo handshake o listener já leu
-/// (é ele quem descobre a qual torrent a conexão pertence).
+/// Takes over a connection that reached us, whose handshake the listener has
+/// already read (it is the listener that discovers which torrent the
+/// connection belongs to).
 pub async fn spawn_incoming(
     slot: Slot,
     socket: TcpStream,
@@ -157,23 +158,24 @@ pub async fn spawn_incoming(
     let handle = PeerHandle { tx };
     let _ = addr;
     tokio::spawn(async move {
-        let motivo = run(slot, socket, cfg, events.clone(), rx, Some(handshake))
+        let reason = run(slot, socket, cfg, events.clone(), rx, Some(handshake))
             .await
             .err()
             .map(|e| format!("{e:#}"))
-            .unwrap_or_else(|| "encerrado".to_string());
-        let _ = events.send(PeerEvent::Disconnected(slot, motivo)).await;
+            .unwrap_or_else(|| "closed".to_string());
+        let _ = events.send(PeerEvent::Disconnected(slot, reason)).await;
     });
     handle
 }
 
-/// Lê o handshake de uma conexão recebida antes de saber a qual torrent ela
-/// pertence. Devolve o handshake e o socket, já sem consumir mais nada.
+/// Reads the handshake of an incoming connection before knowing which torrent
+/// it belongs to. Returns the handshake and the socket, without consuming
+/// anything further.
 pub async fn read_incoming_handshake(socket: &mut TcpStream) -> Result<Handshake> {
     let mut buf = [0u8; 68];
     timeout(HANDSHAKE_TIMEOUT, socket.read_exact(&mut buf))
         .await
-        .context("tempo esgotado esperando handshake")??;
+        .context("timed out waiting for handshake")??;
     Handshake::from_bytes(&buf)
 }
 
@@ -183,50 +185,49 @@ async fn run(
     cfg: PeerConfig,
     events: mpsc::Sender<PeerEvent>,
     mut cmds: mpsc::Receiver<PeerCommand>,
-    handshake_lido: Option<Handshake>,
+    handshake_already_read: Option<Handshake>,
 ) -> Result<()> {
-    // Latência importa mais que throughput agregado aqui: sem isso, um `request`
-    // pequeno pode ficar preso no buffer do Nagle esperando companhia.
+    // Latency matters more than aggregate throughput here: without this, a
+    // small `request` can get stuck in Nagle's buffer waiting for company.
     socket.set_nodelay(true).ok();
 
-    let (leitura, escrita) = socket.into_split();
-    let mut reader = BufReader::with_capacity(64 * 1024, leitura);
-    let mut writer = BufWriter::with_capacity(64 * 1024, escrita);
+    let (read_half, write_half) = socket.into_split();
+    let mut reader = BufReader::with_capacity(64 * 1024, read_half);
+    let mut writer = BufWriter::with_capacity(64 * 1024, write_half);
 
     // -- handshake ---------------------------------------------------------
-    let nosso = Handshake::new(cfg.info_hash, cfg.peer_id, cfg.dht);
-    writer.write_all(&nosso.to_bytes()).await?;
+    let ours = Handshake::new(cfg.info_hash, cfg.peer_id, cfg.dht);
+    writer.write_all(&ours.to_bytes()).await?;
     writer.flush().await?;
 
-    let deles = match handshake_lido {
+    let theirs = match handshake_already_read {
         Some(hs) => hs,
         None => {
             let mut buf = [0u8; 68];
             timeout(HANDSHAKE_TIMEOUT, reader.read_exact(&mut buf))
                 .await
-                .context("tempo esgotado esperando handshake")??;
+                .context("timed out waiting for handshake")??;
             Handshake::from_bytes(&buf)?
         }
     };
-    if deles.info_hash != cfg.info_hash {
-        bail!("peer respondeu com outro info_hash");
+    if theirs.info_hash != cfg.info_hash {
+        bail!("peer replied with a different info_hash");
     }
-    if deles.peer_id == cfg.peer_id {
-        bail!("conexão com nós mesmos");
+    if theirs.peer_id == cfg.peer_id {
+        bail!("connection to ourselves");
     }
 
-    let suporta_ext = deles.supports(reserved::EXTENSION);
-    let suporta_dht = deles.supports(reserved::DHT);
+    let supports_ext = theirs.supports(reserved::EXTENSION);
+    let supports_dht = theirs.supports(reserved::DHT);
 
     let mut extensions = ExtensionHandshake::default();
-    if suporta_ext {
-        let nosso_ext =
-            ExtensionHandshake::ours(cfg.metadata_size, cfg.allow_pex, cfg.listen_port);
+    if supports_ext {
+        let our_ext = ExtensionHandshake::ours(cfg.metadata_size, cfg.allow_pex, cfg.listen_port);
         write_msg(
             &mut writer,
             &Message::Extended {
                 id: 0,
-                payload: nosso_ext.encode(),
+                payload: our_ext.encode(),
             },
         )
         .await?;
@@ -244,44 +245,44 @@ async fn run(
     events
         .send(PeerEvent::Connected {
             slot,
-            peer_id: deles.peer_id,
-            supports_dht: suporta_dht,
+            peer_id: theirs.peer_id,
+            supports_dht,
         })
         .await
         .ok();
 
-    // -- laço principal ----------------------------------------------------
+    // -- main loop ---------------------------------------------------------
     //
-    // A leitura roda em uma task própria, e não dentro do `select!`, porque
-    // `read_message` não é cancel-safe: ela consome os 4 bytes de tamanho antes
-    // do corpo. Cancelada entre os dois, esses bytes somem do buffer e a
-    // mensagem seguinte é lida a partir do corpo — o stream dessincroniza e a
-    // conexão morre anunciando "mensagem de 1,6 GB". Receber de um canal, ao
-    // contrário, é cancel-safe.
+    // Reading runs in its own task, not inside the `select!`, because
+    // `read_message` is not cancel-safe: it consumes the 4-byte length before
+    // the body. Cancelled between the two, those bytes vanish from the buffer
+    // and the next message is read starting from the body — the stream loses
+    // sync and the connection dies announcing a "1.6 GB message". Receiving
+    // from a channel, by contrast, is cancel-safe.
     let (msgs_tx, mut msgs_rx) = mpsc::channel::<Result<Message>>(512);
-    let leitor = tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         loop {
-            let resultado = match timeout(IDLE_TIMEOUT, read_message(&mut reader)).await {
+            let result = match timeout(IDLE_TIMEOUT, read_message(&mut reader)).await {
                 Ok(Ok(msg)) => Ok(msg),
                 Ok(Err(e)) => Err(e),
-                Err(_) => Err(anyhow::anyhow!("peer ficou mudo")),
+                Err(_) => Err(anyhow::anyhow!("peer went silent")),
             };
-            let acabou = resultado.is_err();
-            if msgs_tx.send(resultado).await.is_err() || acabou {
+            let done = result.is_err();
+            if msgs_tx.send(result).await.is_err() || done {
                 return;
             }
         }
     });
-    let _leitor = AbortaAoSair(leitor);
+    let _reader_task = AbortOnDrop(reader_task);
 
     let mut keepalive = tokio::time::interval_at(Instant::now() + KEEPALIVE, KEEPALIVE);
-    let mut pedidos_recebidos = 0usize;
-    let mut enviados = 0u64;
-    let mut ultimo_relato = Instant::now();
+    let mut received_requests = 0usize;
+    let mut sent_bytes = 0u64;
+    let mut last_report = Instant::now();
 
     loop {
         tokio::select! {
-            // Prioriza drenar comandos: pedidos parados são banda ociosa.
+            // Prioritize draining commands: stalled requests are idle bandwidth.
             biased;
 
             cmd = cmds.recv() => {
@@ -289,32 +290,32 @@ async fn run(
                 if matches!(cmd, PeerCommand::Shutdown) {
                     return Ok(());
                 }
-                let bytes = apply_command(&mut writer, cmd, &extensions, &mut pedidos_recebidos).await?;
-                enviados += bytes;
+                let bytes = apply_command(&mut writer, cmd, &extensions, &mut received_requests).await?;
+                sent_bytes += bytes;
 
-                // Esvazia o resto da fila antes de dar flush: um flush por
-                // lote em vez de um por mensagem.
+                // Drain the rest of the queue before flushing: one flush per
+                // batch instead of one per message.
                 while let Ok(cmd) = cmds.try_recv() {
                     if matches!(cmd, PeerCommand::Shutdown) {
                         writer.flush().await?;
                         return Ok(());
                     }
-                    enviados += apply_command(&mut writer, cmd, &extensions, &mut pedidos_recebidos).await?;
+                    sent_bytes += apply_command(&mut writer, cmd, &extensions, &mut received_requests).await?;
                 }
                 writer.flush().await?;
 
-                if enviados > 0 && ultimo_relato.elapsed() > Duration::from_millis(500) {
-                    events.send(PeerEvent::Uploaded(slot, std::mem::take(&mut enviados))).await.ok();
-                    ultimo_relato = Instant::now();
+                if sent_bytes > 0 && last_report.elapsed() > Duration::from_millis(500) {
+                    events.send(PeerEvent::Uploaded(slot, std::mem::take(&mut sent_bytes))).await.ok();
+                    last_report = Instant::now();
                 }
             }
 
             msg = msgs_rx.recv() => {
-                // `None` significa que a task de leitura encerrou.
+                // `None` means the reader task has ended.
                 let Some(msg) = msg else { return Ok(()) };
                 let msg = msg?;
-                if let Some(evento) = handle_message(slot, msg, &mut extensions, &mut pedidos_recebidos)?
-                    && events.send(evento).await.is_err() {
+                if let Some(event) = handle_message(slot, msg, &mut extensions, &mut received_requests)?
+                    && events.send(event).await.is_err() {
                         return Ok(());
                     }
             }
@@ -327,11 +328,11 @@ async fn run(
     }
 }
 
-/// Garante que a task de leitura morra junto com o peer, em vez de ficar
-/// pendurada em `read_message` até o timeout de inatividade.
-struct AbortaAoSair(#[allow(dead_code)] tokio::task::JoinHandle<()>);
+/// Ensures the reader task dies along with the peer, instead of staying
+/// stuck in `read_message` until the idle timeout.
+struct AbortOnDrop(#[allow(dead_code)] tokio::task::JoinHandle<()>);
 
-impl Drop for AbortaAoSair {
+impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
     }
@@ -341,15 +342,15 @@ async fn write_msg<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, msg: &Messa
     message::write_message(writer, msg).await
 }
 
-/// Executa um comando do engine; devolve quantos bytes de *payload* foram
-/// enviados ao peer (só conta upload real, não overhead de protocolo).
+/// Executes an engine command; returns how many *payload* bytes were sent
+/// to the peer (only counts real upload, not protocol overhead).
 async fn apply_command<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     cmd: PeerCommand,
     ext: &ExtensionHandshake,
-    pedidos_recebidos: &mut usize,
+    received_requests: &mut usize,
 ) -> Result<u64> {
-    let mut enviados = 0;
+    let mut sent_bytes = 0;
     match cmd {
         PeerCommand::Request(reqs) => {
             for req in reqs {
@@ -363,8 +364,8 @@ async fn apply_command<W: tokio::io::AsyncWrite + Unpin>(
         PeerCommand::Interested(true) => write_msg(writer, &Message::Interested).await?,
         PeerCommand::Interested(false) => write_msg(writer, &Message::NotInterested).await?,
         PeerCommand::SendBlock(req, data) => {
-            *pedidos_recebidos = pedidos_recebidos.saturating_sub(1);
-            enviados = data.len() as u64;
+            *received_requests = received_requests.saturating_sub(1);
+            sent_bytes = data.len() as u64;
             write_msg(
                 writer,
                 &Message::Piece {
@@ -376,7 +377,7 @@ async fn apply_command<W: tokio::io::AsyncWrite + Unpin>(
             .await?;
         }
         PeerCommand::Reject(req) => {
-            *pedidos_recebidos = pedidos_recebidos.saturating_sub(1);
+            *received_requests = received_requests.saturating_sub(1);
             write_msg(writer, &Message::RejectRequest(req)).await?;
         }
         PeerCommand::RequestMetadata(piece) => {
@@ -417,15 +418,15 @@ async fn apply_command<W: tokio::io::AsyncWrite + Unpin>(
         }
         PeerCommand::Shutdown => {}
     }
-    Ok(enviados)
+    Ok(sent_bytes)
 }
 
-/// Traduz uma mensagem do peer em um evento para o engine.
+/// Translates a peer message into an event for the engine.
 fn handle_message(
     slot: Slot,
     msg: Message,
     ext: &mut ExtensionHandshake,
-    pedidos_recebidos: &mut usize,
+    received_requests: &mut usize,
 ) -> Result<Option<PeerEvent>> {
     Ok(match msg {
         Message::KeepAlive => None,
@@ -433,8 +434,8 @@ fn handle_message(
         Message::Unchoke => Some(PeerEvent::Choked(slot, false)),
         Message::Interested => Some(PeerEvent::Interested(slot, true)),
         Message::NotInterested => {
-            // Perdeu o interesse: os pedidos pendentes dele morrem junto.
-            *pedidos_recebidos = 0;
+            // Lost interest: its pending requests die with it.
+            *received_requests = 0;
             Some(PeerEvent::Interested(slot, false))
         }
         Message::Have(piece) => Some(PeerEvent::Have(slot, piece)),
@@ -443,19 +444,19 @@ fn handle_message(
         Message::HaveNone => Some(PeerEvent::HaveNone(slot)),
         Message::Request(req) => {
             if req.length > MAX_SERVE_LENGTH {
-                bail!("peer pediu bloco de {} bytes", req.length);
+                bail!("peer requested a block of {} bytes", req.length);
             }
-            *pedidos_recebidos += 1;
-            if *pedidos_recebidos > MAX_INCOMING_REQUESTS {
-                bail!("peer enfileirou {pedidos_recebidos} pedidos sem esperar");
+            *received_requests += 1;
+            if *received_requests > MAX_INCOMING_REQUESTS {
+                bail!("peer queued {received_requests} requests without waiting");
             }
             Some(PeerEvent::BlockRequested(slot, req))
         }
-        // O cancelamento só desfaz a contagem de pedidos pendentes; se o bloco
-        // já estiver a caminho, mandá-lo mesmo assim é legítimo e o peer
-        // descarta.
+        // A cancel only undoes the pending-request count; if the block is
+        // already on its way, sending it anyway is legitimate and the peer
+        // discards it.
         Message::Cancel(_) => {
-            *pedidos_recebidos = pedidos_recebidos.saturating_sub(1);
+            *received_requests = received_requests.saturating_sub(1);
             None
         }
         Message::Piece {
@@ -473,23 +474,25 @@ fn handle_message(
         }),
         Message::RejectRequest(req) => Some(PeerEvent::Rejected(slot, req)),
         Message::Port(port) => Some(PeerEvent::DhtPort(slot, port)),
-        // Sugestões da fast extension são dicas de cache do peer; o picker já
-        // decide melhor que isso, então só registramos que ele tem a peça.
+        // Fast-extension suggestions are the peer's cache hints; the picker
+        // already decides better than that, so we only record that it has
+        // the piece.
         Message::SuggestPiece(piece) | Message::AllowedFast(piece) => {
             Some(PeerEvent::Have(slot, piece))
         }
         Message::Extended { id: 0, payload } => {
-            // O handshake de extensões pode ser reenviado a qualquer momento
-            // para ligar ou desligar extensões; o último vale.
+            // The extension handshake may be resent at any time to enable or
+            // disable extensions; the latest one wins.
             *ext = ExtensionHandshake::decode(&payload)?;
             Some(PeerEvent::Extensions(slot, Box::new(ext.clone())))
         }
         Message::Extended { id, payload } => match id {
-            extension::UT_METADATA_ID => {
-                Some(PeerEvent::Metadata(slot, MetadataMessage::decode(&payload)?))
-            }
+            extension::UT_METADATA_ID => Some(PeerEvent::Metadata(
+                slot,
+                MetadataMessage::decode(&payload)?,
+            )),
             extension::UT_PEX_ID => Some(PeerEvent::Pex(PexMessage::decode(&payload)?)),
-            // Extensão que anunciamos? Não. Ignorar é o comportamento correto.
+            // Not an extension we announced. Ignoring it is the correct behavior.
             _ => None,
         },
     })
@@ -500,19 +503,19 @@ mod tests {
     use super::*;
     use crate::picker::BLOCK_SIZE;
 
-    fn ext_vazio() -> ExtensionHandshake {
+    fn empty_ext() -> ExtensionHandshake {
         ExtensionHandshake::default()
     }
 
     #[test]
-    fn traduz_mensagens_em_eventos() {
-        let mut ext = ext_vazio();
-        let mut pend = 0;
+    fn translates_messages_into_events() {
+        let mut ext = empty_ext();
+        let mut pending = 0;
 
-        let ev = handle_message(3, Message::Unchoke, &mut ext, &mut pend).unwrap();
+        let ev = handle_message(3, Message::Unchoke, &mut ext, &mut pending).unwrap();
         assert!(matches!(ev, Some(PeerEvent::Choked(3, false))));
 
-        let ev = handle_message(3, Message::Have(7), &mut ext, &mut pend).unwrap();
+        let ev = handle_message(3, Message::Have(7), &mut ext, &mut pending).unwrap();
         assert!(matches!(ev, Some(PeerEvent::Have(3, 7))));
 
         let ev = handle_message(
@@ -523,30 +526,30 @@ mod tests {
                 block: vec![0; 32],
             },
             &mut ext,
-            &mut pend,
+            &mut pending,
         )
         .unwrap();
         match ev {
             Some(PeerEvent::Block { request, data, .. }) => {
                 assert_eq!(request.piece, 1);
                 assert_eq!(request.offset, BLOCK_SIZE);
-                assert_eq!(request.length, 32, "tamanho vem do bloco recebido");
+                assert_eq!(request.length, 32, "length comes from the received block");
                 assert_eq!(data.len(), 32);
             }
-            outro => panic!("esperava Block, veio {outro:?}"),
+            other => panic!("expected Block, got {other:?}"),
         }
 
         assert!(
-            handle_message(3, Message::KeepAlive, &mut ext, &mut pend)
+            handle_message(3, Message::KeepAlive, &mut ext, &mut pending)
                 .unwrap()
                 .is_none()
         );
     }
 
     #[test]
-    fn corta_peer_que_abusa_de_pedidos() {
-        let mut ext = ext_vazio();
-        let mut pend = 0;
+    fn cuts_off_peer_that_abuses_requests() {
+        let mut ext = empty_ext();
+        let mut pending = 0;
         let req = BlockRequest {
             piece: 0,
             offset: 0,
@@ -554,70 +557,75 @@ mod tests {
         };
 
         for _ in 0..MAX_INCOMING_REQUESTS {
-            handle_message(0, Message::Request(req), &mut ext, &mut pend).unwrap();
+            handle_message(0, Message::Request(req), &mut ext, &mut pending).unwrap();
         }
         assert!(
-            handle_message(0, Message::Request(req), &mut ext, &mut pend).is_err(),
-            "fila cheia derruba o peer"
+            handle_message(0, Message::Request(req), &mut ext, &mut pending).is_err(),
+            "a full queue drops the peer"
         );
 
-        let gigante = BlockRequest {
+        let giant = BlockRequest {
             piece: 0,
             offset: 0,
             length: MAX_SERVE_LENGTH + 1,
         };
-        let mut pend = 0;
-        assert!(handle_message(0, Message::Request(gigante), &mut ext, &mut pend).is_err());
+        let mut pending = 0;
+        assert!(handle_message(0, Message::Request(giant), &mut ext, &mut pending).is_err());
     }
 
     #[test]
-    fn cancel_e_not_interested_esvaziam_a_fila() {
-        let mut ext = ext_vazio();
-        let mut pend = 0;
+    fn cancel_and_not_interested_drain_the_queue() {
+        let mut ext = empty_ext();
+        let mut pending = 0;
         let req = BlockRequest {
             piece: 0,
             offset: 0,
             length: 16,
         };
 
-        handle_message(0, Message::Request(req), &mut ext, &mut pend).unwrap();
-        handle_message(0, Message::Request(req), &mut ext, &mut pend).unwrap();
-        assert_eq!(pend, 2);
+        handle_message(0, Message::Request(req), &mut ext, &mut pending).unwrap();
+        handle_message(0, Message::Request(req), &mut ext, &mut pending).unwrap();
+        assert_eq!(pending, 2);
 
-        handle_message(0, Message::Cancel(req), &mut ext, &mut pend).unwrap();
-        assert_eq!(pend, 1);
-        handle_message(0, Message::NotInterested, &mut ext, &mut pend).unwrap();
-        assert_eq!(pend, 0);
+        handle_message(0, Message::Cancel(req), &mut ext, &mut pending).unwrap();
+        assert_eq!(pending, 1);
+        handle_message(0, Message::NotInterested, &mut ext, &mut pending).unwrap();
+        assert_eq!(pending, 0);
     }
 
     #[test]
-    fn handshake_de_extensoes_atualiza_os_ids() {
-        let mut ext = ext_vazio();
-        let mut pend = 0;
+    fn extension_handshake_updates_the_ids() {
+        let mut ext = empty_ext();
+        let mut pending = 0;
         assert!(!ext.supports_metadata());
 
         let payload = ExtensionHandshake::ours(Some(1000), true, 6881).encode();
-        let ev = handle_message(0, Message::Extended { id: 0, payload }, &mut ext, &mut pend)
-            .unwrap();
+        let ev = handle_message(
+            0,
+            Message::Extended { id: 0, payload },
+            &mut ext,
+            &mut pending,
+        )
+        .unwrap();
         assert!(matches!(ev, Some(PeerEvent::Extensions(0, _))));
         assert!(ext.supports_metadata() && ext.supports_pex());
         assert_eq!(ext.metadata_size, Some(1000));
 
-        // Agora que sabemos os ids, uma mensagem de metadata é reconhecida.
-        let dados = MetadataMessage::Request { piece: 0 }.encode();
+        // Now that we know the ids, a metadata message is recognized.
+        let data_bytes = MetadataMessage::Request { piece: 0 }.encode();
         let ev = handle_message(
             0,
             Message::Extended {
                 id: extension::UT_METADATA_ID,
-                payload: dados,
+                payload: data_bytes,
             },
             &mut ext,
-            &mut pend,
+            &mut pending,
         )
         .unwrap();
         assert!(matches!(ev, Some(PeerEvent::Metadata(0, _))));
 
-        // Extensão desconhecida não derruba a conexão.
+        // An unknown extension does not drop the connection.
         let ev = handle_message(
             0,
             Message::Extended {
@@ -625,7 +633,7 @@ mod tests {
                 payload: vec![],
             },
             &mut ext,
-            &mut pend,
+            &mut pending,
         )
         .unwrap();
         assert!(ev.is_none());

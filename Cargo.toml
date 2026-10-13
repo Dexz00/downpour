@@ -2,6 +2,13 @@
 name = "torrra"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal BitTorrent client written from scratch in Rust"
+license = "MIT"
+
+# The fuzz crate under `fuzz/` has its own workspace; keep it out of this one
+# so a plain `cargo build` / `cargo test` never tries to build it.
+[workspace]
+exclude = ["fuzz"]
 
 [dependencies]
 anyhow = "1.0.104"

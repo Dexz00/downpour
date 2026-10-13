@@ -1,243 +1,297 @@
 # torrra
 
-Cliente BitTorrent de terminal escrito do zero em Rust — protocolo, DHT,
-seleção de peças e interface, sem depender de nenhuma biblioteca de torrent.
+A terminal BitTorrent client written from scratch in Rust — protocol, DHT,
+piece selection and interface, without depending on any torrent library.
 
-Lê arquivos `.torrent` e magnet links.
+It reads `.torrent` files and magnet links.
 
 ```
 torrra ubuntu.torrent -o ~/Downloads
 torrra "magnet:?xt=urn:btih:..." -o ~/Downloads
 ```
 
-## O que está implementado
+## What is implemented
 
-| Parte | Especificação |
+| Part | Specification |
 |---|---|
-| Protocolo base, bencode, tracker HTTP | BEP-3 |
-| Peers compactos do tracker | BEP-23 |
-| DHT (busca e resposta a consultas) | BEP-5 |
+| Base protocol, bencode, HTTP tracker | BEP-3 |
+| Compact tracker peers | BEP-23 |
+| DHT (lookup and answering queries) | BEP-5 |
 | Fast extension | BEP-6 |
-| Protocolo de extensões | BEP-10 |
-| Metadata por magnet (`ut_metadata`) | BEP-9 |
-| Troca de peers (`ut_pex`), envio e recepção | BEP-11 |
-| Múltiplos trackers em tiers | BEP-12 |
-| Tracker UDP | BEP-15 |
-| Flag `private` | BEP-27 |
+| Extension protocol | BEP-10 |
+| Metadata over magnet (`ut_metadata`) | BEP-9 |
+| Peer exchange (`ut_pex`), sending and receiving | BEP-11 |
+| Multiple trackers in tiers | BEP-12 |
+| UDP tracker | BEP-15 |
+| `private` flag | BEP-27 |
 
-Fora isso: rarest-first, endgame, escolha sequencial para assistir enquanto
-baixa, prioridade por arquivo, resume automático, limites de banda e
-verificação SHA-1 de toda peça antes de gravar.
+Beyond that: rarest-first, endgame, sequential selection to watch while
+downloading, per-file priority, automatic resume, bandwidth limits, and
+SHA-1 verification of every piece before it is written.
 
-## Compilar
+## Building
 
 ```
 cargo build --release
 ```
 
-O binário sai em `target/release/torrra`. No Windows ele já sai com o ícone e o
-bloco de versão embutidos — um arquivo só, sem nada em volta para distribuir.
+The binary lands in `target/release/torrra`. On Windows it already comes
+with the icon and version block embedded — a single file, with nothing
+around it to distribute.
 
-## No Windows: arrastar e soltar
+## On Windows: drag and drop
 
-O próprio `torrra.exe` é o alvo:
+The `torrra.exe` itself is the drop target:
 
-- **arraste** um ou vários `.torrent` para cima dele — baixa todos na mesma
-  sessão;
-- **clique duas vezes** — abre a interface vazia, onde se cola um magnet com
-  `Ctrl+V` (a caixa abre sozinha) ou com a tecla `a`.
+- **drag** one or several `.torrent` files onto it — it downloads all of
+  them in the same session;
+- **double-click** it — the empty interface opens, where you paste a magnet
+  with `Ctrl+V` (the box opens by itself) or with the `a` key.
 
-Aberto assim, o destino é a sua pasta **Downloads** — e não o diretório do
-programa, que é o que o Explorer entrega. Pelo terminal nada muda: continua
-sendo o diretório atual.
+Opened that way, the destination is your **Downloads** folder — not the
+program's directory, which is what Explorer hands us. From a terminal
+nothing changes: it stays the current directory.
 
-Para fixar outro destino, crie um `destino.txt` ao lado do `.exe` com o caminho
-em uma linha. A ordem de precedência é `-o`, depois `destino.txt`, depois
-Downloads.
+To pin another destination, create a `destination.txt` next to the `.exe`
+with the path on a single line. Precedence order is `-o`, then
+`destination.txt`, then Downloads. (The legacy name `destino.txt` is still
+honored.)
 
-## Uso
+## Usage
 
 ```
-torrra <TORRENT|MAGNET>... [opções]
+torrra <TORRENT|MAGNET>... [options]
 
-  -o, --saida <DIR>          diretório de destino (padrão: Downloads quando
-                             aberto pelo gerenciador, senão o diretório atual)
-  -p, --porta <N>            porta TCP e UDP (padrão: 6881)
-  -s, --sequencial           baixa em ordem, para assistir enquanto baixa
-      --max-peers <N>        conexões por torrent (padrão: 100)
-      --slots-upload <N>     peers atendidos ao mesmo tempo (padrão: 6)
-      --limite-download <T>  ex.: 2M, 500k
-      --limite-upload <T>
-      --sem-dht              só trackers
-      --sem-seed             sai ao concluir, em vez de semear
-      --simples              sem interface, uma linha de progresso por segundo
-      --info <TORRENT>       mostra o conteúdo do arquivo e sai
+  -o, --output <DIR>         destination directory (default: Downloads when
+                             opened from a file manager, else the current dir)
+  -p, --port <N>             TCP and UDP port (default: 6881)
+  -s, --sequential           download in order, to watch while downloading
+      --max-peers <N>        connections per torrent (default: 100)
+      --slots-upload <N>     peers served at the same time (default: 6)
+      --download-limit <R>   e.g. 2M, 500k
+      --upload-limit <R>
+      --no-dht               trackers only
+      --no-seed              exit when done, instead of seeding
+      --simple               no interface, one progress line per second
+      --info <TORRENT>       show the contents of the file and exit
 ```
+
+The previous Portuguese flag names (`--saida`, `--porta`, `--sequencial`,
+`--sem-dht`, `--sem-seed`, `--simples`, `--limite-download`,
+`--limite-upload`) keep working as hidden aliases.
 
 ### Interface
 
-| Tecla | Ação |
+| Key | Action |
 |---|---|
-| `Ctrl+V` | colar um magnet — a caixa abre sozinha |
-| `a` | adicionar torrent (digitar magnet ou caminho) |
-| `1`–`4`, `Tab` | trocar de aba |
-| `↑` `↓` / `j` `k` | mover a seleção |
-| `p` | pausar / retomar |
-| `s` | alternar modo sequencial |
-| `r` | reverificar os arquivos em disco |
-| `n` | próximo torrent |
-| `espaço` | (aba Arquivos) incluir ou pular o arquivo |
-| `+` `-` | (aba Arquivos) prioridade |
-| `q` | sair |
+| `Ctrl+V` | paste a magnet — the box opens by itself |
+| `a` | add a torrent (type a magnet or a path) |
+| `1`–`4`, `Tab` | switch tabs |
+| `↑` `↓` / `j` `k` | move the selection |
+| `p` | pause / resume |
+| `s` | toggle sequential mode |
+| `r` | recheck the files on disk |
+| `n` | next torrent |
+| `space` | (Files tab) include or skip the file |
+| `+` `-` | (Files tab) priority |
+| `q` | quit |
 
-### Diagnóstico
+### Diagnostics
 
-`TORRRA_LOG` escreve detalhes em stderr, filtrando por assunto:
+`TORRRA_LOG` writes details to stderr, filtered by topic:
 
 ```
 TORRRA_LOG=peer,dht torrra x.torrent 2> log.txt
 ```
 
-Assuntos: `peer`, `peers`, `dht`, `estado`. `1` liga todos.
+Topics: `peer`, `peers`, `dht`, `state`. `1` enables all of them.
 
-## Como está organizado
+## How it is organized
 
-```
-bencode      codificação bencode, preservando os bytes crus do `info`
-metainfo     leitura do .torrent; saneamento de caminhos
-magnet       magnet links (hex e base32)
-id           identificadores de 20 bytes e distância XOR
-bitfield     bitfield de peças no layout do protocolo
-compact      endereços compactos (tracker, DHT, PEX)
-storage      I/O posicional mapeando peças para múltiplos arquivos
-picker       escolha de peças e blocos
-peer/        wire protocol, extensões, ut_metadata, ut_pex
-tracker/     announce HTTP e UDP, tiers, backoff
-dht/         KRPC, tabela de roteamento, busca iterativa
-engine       o laço que decide tudo
-session      porta de escuta, DHT compartilhado, lista de torrents
-plataforma   console, pasta de destino e janela quando não há terminal
-ui           interface de terminal
-build.rs     ícone e bloco de versão do executável no Windows
-assets/      a logo e o script que a converte em torrra.ico
-```
-
-O `.ico` é versionado; ele só precisa ser regerado quando a logo mudar:
+The implementation lives in a library crate (`src/lib.rs`); the binary is a
+thin CLI front end over it.
 
 ```
-python assets/gerar-icone.py
+src/lib.rs     library root; the binary only parses the CLI over it
+bencode        bencode encoding, preserving the raw `info` bytes
+metainfo       .torrent parsing; path sanitization
+magnet         magnet links (hex and base32)
+id             20-byte identifiers and XOR distance
+bitfield       piece bitfield in the protocol layout
+compact        compact addresses (tracker, DHT, PEX)
+storage        positional I/O mapping pieces onto multiple files
+picker         piece and block selection
+peer/          wire protocol, extensions, ut_metadata, ut_pex
+tracker/       HTTP and UDP announce, tiers, backoff
+dht/           KRPC, routing table, iterative lookup
+engine/        the loop that decides everything
+  mod.rs       decision loop, peer bookkeeping, choking, DHT/PEX timers
+  types.rs     Config, Source, State, Command, Snapshot, TorrentHandle
+  candidates.rs  dial queue with time-based quarantine
+  helpers.rs   per-file progress, ideal request depth, optimistic unchoke
+session        listening port, shared DHT, torrent list
+platform       console, destination folder and window when there is no terminal
+ui/            terminal interface
+  mod.rs       app state, event and key handling
+  render.rs    drawing every tab from a Snapshot
+build.rs       icon and version block of the Windows executable
+assets/        the logo and the script that converts it into torrra.ico
+fuzz/          cargo-fuzz targets for the untrusted-input parsers
+.github/       CI: fmt, clippy -D warnings, tests and release build
 ```
 
-O desenho é de ator: **um** laço decide, e todo o resto são tasks que só
-executam. Cada peer é uma task que fala protocolo e reporta eventos; o disco
-roda em `spawn_blocking`; a interface lê um `Snapshot` e nunca toca no estado
-do engine. Não há estado compartilhado entre peers, então não há contenção nem
-ordem de lock a respeitar.
+The `.ico` is versioned; it only needs regenerating when the logo changes:
 
-## Decisões que valem explicação
+```
+python assets/generate-icon.py
+```
 
-**Rarest-first com baldes, não amostragem.** Sortear algumas peças e pegar a
-mais rara entre elas parece bom o suficiente, e não é: com 48 sorteios entre 64
-peças, a peça rara escapa quase metade das vezes — e a proporção piora em
-torrents grandes. As peças desejadas ficam agrupadas por (prioridade,
-disponibilidade), e o balde de menor índice é, por construção, o mais raro.
-Escolha exata, custo constante.
+The design is actor-based: **one** loop decides, and everything else is
+tasks that only execute. Each peer is a task that speaks the protocol and
+reports events; disk runs in `spawn_blocking`; the interface reads a
+`Snapshot` and never touches engine state. There is no state shared
+between peers, so there is no contention and no lock ordering to respect.
 
-**A leitura do socket não fica dentro do `select!`.** `read_message` consome os
-4 bytes de tamanho antes do corpo; cancelada entre os dois, esses bytes somem e
-a mensagem seguinte é lida a partir do corpo. O stream dessincroniza e a
-conexão morre anunciando "mensagem de 1,6 GB". A leitura roda em uma task
-própria e chega ao laço por um canal, que é cancel-safe. Isso separou 55 KiB/s
-de 84 MiB/s.
+## Decisions worth explaining
 
-**Toda peça é conferida antes de tocar o disco.** O SHA-1 roda sobre o buffer
-em memória; só depois a peça é gravada. Peça corrompida nunca chega ao arquivo.
+**Rarest-first with buckets, not sampling.** Drawing a few pieces and
+picking the rarest among them sounds good enough, and it is not: with 48
+draws among 64 pieces, the rare piece escapes almost half the time — and
+the ratio worsens on large torrents. Wanted pieces are grouped by
+(priority, availability), and the lowest-index bucket is, by construction,
+the rarest. Exact choice, constant cost.
 
-**Caminhos do `.torrent` são saneados.** Um `.torrent` é um arquivo de
-terceiros: sem saneamento, um caminho como `["..", "..", "autorun.inf"]`
-escreveria fora do diretório de destino. Nomes reservados do Windows e espaços
-ou pontos finais também são tratados, senão o caminho gravado divergiria do
-caminho verificado.
+**Socket reading does not live inside the `select!`.** `read_message`
+consumes the 4 length bytes before the body; cancelled between the two,
+those bytes vanish and the next message is read starting from the body.
+The stream desynchronizes and the connection dies announcing a "1.6 GB
+message". Reading runs in its own task and reaches the loop over a channel,
+which is cancel-safe. That separated 55 KiB/s from 84 MiB/s.
 
-**Discar é largo e com prazo curto.** A maior parte dos endereços que o DHT
-devolve está morta ou atrás de NAT; o custo de tentar é espera, não banda. 60
-tentativas simultâneas com 6 segundos de prazo acham os peers vivos muito mais
-rápido do que uma fila estreita e paciente.
+**Every piece is checked before touching disk.** The SHA-1 runs over the
+in-memory buffer; only then is the piece written. A corrupt piece never
+reaches the file.
 
-**Loopback passa no parsing, mas não é discável.** Decodificar não é decidir: um
-peer em `127.0.0.1` vindo de um tracker remoto é inútil, mas o mesmo endereço
-vindo de um nó DHT na própria máquina é legítimo. A regra de conexão fica em
-`is_routable`, separada de `is_usable`.
+**`.torrent` paths are sanitized.** A `.torrent` is a third-party file:
+without sanitization, a path like `["..", "..", "autorun.inf"]` would write
+outside the destination directory. Reserved Windows names and trailing
+spaces or dots are also handled, otherwise the written path would diverge
+from the verified path.
 
-**Os nós do DHT são salvos entre execuções.** Eles costumam continuar de pé, e
-entram na tabela sem custo de rede — os roteadores públicos ficam como plano B.
+**Dialing is wide and short-deadlined.** Most addresses the DHT returns are
+dead or behind NAT; the cost of trying is waiting, not bandwidth. 60
+simultaneous attempts with a 6-second deadline find the live peers much
+faster than a narrow, patient queue.
 
-**O ícone é montado sem o compilador de recursos.** Embutir um ícone no `.exe`
-normalmente pede o `rc.exe` do SDK do Windows, que não vem com o Rust e quase
-nunca está no PATH — o build quebraria em máquina limpa, e por um enfeite. O
-`.res` é uma sequência de registros de cabeçalho fixo, então o `build.rs` o
-escreve direto e entrega ao `link.exe`. Sem dependência de build, sem etapa
-manual.
+**Loopback passes parsing, but is not dialable.** Decoding is not deciding:
+a peer on `127.0.0.1` from a remote tracker is useless, but the same
+address from a DHT node on the same machine is legitimate. The connection
+rule lives in `is_routable`, separate from `is_usable`.
 
-**Aberto pelo Explorer, o programa se comporta como aplicativo.** Ali não há
-shell: o console nasce na página de código antiga e some junto com o processo.
-Então o programa põe o console em UTF-8, adota a pasta Downloads em vez do
-diretório atual — que o Explorer define como o do próprio executável — e segura
-a janela quando termina em erro. `GetConsoleProcessList` diz qual é o caso: se
-só existe um processo no console, ninguém nos chamou de um terminal. Pelo
-terminal, nada disso muda.
+**DHT nodes are saved between runs.** They usually stay up, and they enter
+the table at no network cost — the public routers stay as plan B.
 
-**Arquivo recusado vira tela, não `stderr`.** Arrastar cinco `.torrent` e ter um
-corrompido não pode derrubar os outros quatro nem sumir sem explicação: a
-interface ocupa a tela toda, e sem terminal por trás não sobra onde ler a
-mensagem depois. Os recusados aparecem em uma caixa que a primeira tecla
-dispensa.
+**The icon is assembled without the resource compiler.** Embedding an icon
+in the `.exe` normally requires the Windows SDK's `rc.exe`, which does not
+ship with Rust and is almost never on the PATH — the build would break on a
+clean machine, over a decoration. A `.res` is a sequence of fixed-header
+records, so `build.rs` writes it directly and hands it to `link.exe`. No
+build dependency, no manual step. A missing or malformed `.ico` only costs
+a warning, never the build.
 
-**Endereços entram em quarentena, não em lista negra.** Marcar cada endereço
-visto como "já conhecido" parece a forma óbvia de evitar discar duas vezes para
-o mesmo peer, e envenena o enxame: todo peer que cai fica banido para sempre.
-Depois de pausar e retomar, o tracker devolve exatamente os mesmos endereços,
-todos são descartados como repetidos e o download trava mostrando "baixando"
-sem baixar nada. A fila usa quarentena por tempo — curta para quem chegou a
-conversar, longa para quem nem respondeu ao handshake.
+**Opened from Explorer, the program behaves like an app.** There is no
+shell there: the console starts in the legacy code page and vanishes with
+the process. So the program puts the console in UTF-8, adopts the Downloads
+folder instead of the current directory — which Explorer sets to the
+executable's own folder — and holds the window open when it ends in error.
+`GetConsoleProcessList` tells which case it is: if there is only one
+process on the console, nobody called us from a terminal. From a terminal,
+none of this changes.
 
-## Testes
+**A rejected file becomes a screen, not `stderr`.** Dragging five
+`.torrent` files and having one corrupt must not take down the other four
+nor vanish without explanation: the interface owns the whole screen, and
+with no terminal behind it there is nowhere left to read the message
+afterwards. Rejected files appear in a box that the first keypress
+dismisses.
+
+**Addresses go into quarantine, not a blacklist.** Marking every seen
+address as "already known" looks like the obvious way to avoid dialing the
+same peer twice, and it poisons the swarm: every peer that drops stays
+banned forever. After pausing and resuming, the tracker returns exactly the
+same addresses, all are discarded as repeats, and the download stalls
+showing "downloading" without downloading anything. The queue uses a
+time-based quarantine — short for peers that actually talked to us, long
+for addresses that never completed the handshake.
+
+## Tests
 
 ```
 cargo test
 ```
 
-113 testes cobrindo bencode, parsing de `.torrent` e magnet, bitfield, picker
-(rarest-first, endgame, timeouts, prioridades), fila de candidatos (quarentena,
-ciclo pausar/retomar), storage (peças que cruzam arquivos, corrupção, limites),
-wire protocol, extensões, trackers HTTP e UDP, DHT (KRPC ida e volta, tabela de
-roteamento, tokens), escolha do destino e renderização da interface.
+113 tests covering bencode, `.torrent` and magnet parsing, bitfield, the
+picker (rarest-first, endgame, timeouts, priorities), the candidate queue
+(quarantine, the pause/resume cycle), storage (pieces spanning files,
+corruption, bounds), the wire protocol, extensions, HTTP and UDP trackers,
+DHT (KRPC round-trip, routing table, tokens), destination selection and
+interface rendering.
 
-Há também dois testes de rede marcados como `#[ignore]`, que falam com um
-enxame de verdade:
-
-```
-TORRENT=caminho.torrent cargo test announce_real   -- --ignored --nocapture
-TORRENT=caminho.torrent cargo test ciclo_pausa_real -- --ignored --nocapture
-```
-
-E um terceiro ignorado que só imprime as telas, para conferir layout a olho:
+There are also network tests marked `#[ignore]`, which talk to a real
+swarm:
 
 ```
-cargo test olhar_telas -- --ignored --nocapture
+TORRENT=path.torrent cargo test announce_real       -- --ignored --nocapture
+TORRENT=path.torrent cargo test real_pause_resume   -- --ignored --nocapture
 ```
 
-## Validação
+And an ignored one that only prints the screens, to check the layout by
+eye:
 
-Baixado e conferido de ponta a ponta com o Ubuntu 24.04.4 (6,2 GB): pelo
-`.torrent` e por magnet puro sem nenhum tracker, com o SHA256 do arquivo final
-idêntico ao publicado em `releases.ubuntu.com`.
+```
+cargo test view_screens -- --ignored --nocapture
+```
 
-## Limitações conhecidas
+### Fuzzing
 
-- Só BitTorrent v1. Torrents exclusivamente v2 (BEP-52) são recusados com
-  mensagem clara; híbridos funcionam pela parte v1.
-- Sem web seeds (BEP-19): a URL aparece em `--info`, mas não é usada como fonte.
-- Sem µTP, sem criptografia de conexão (MSE) e sem UPnP/NAT-PMP — sem
-  redirecionamento de porta, só conexões de saída.
-- Sem IPv6 nos trackers UDP.
+The parsers that take untrusted bytes — bencode, wire messages,
+KRPC/compact addresses, and metainfo/magnet — have
+[cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets under `fuzz/`:
+
+```
+cargo install cargo-fuzz
+cargo fuzz run bencode
+cargo fuzz run peer_message
+cargo fuzz run krpc
+cargo fuzz run metainfo
+```
+
+They live in their own workspace, so a normal `cargo build`/`cargo test`
+never builds them; CI only checks that they still compile.
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs, on Linux, Windows and
+macOS: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test`, and a release build. A separate job builds the fuzz targets
+on nightly.
+
+## Validation
+
+Downloaded and verified end-to-end with Ubuntu 24.04.4 (6.2 GB): from the
+`.torrent` and from a pure magnet with no tracker at all, with the final
+file's SHA-256 identical to the one published on `releases.ubuntu.com`.
+
+## Known limitations
+
+- BitTorrent v1 only. Exclusively-v2 torrents (BEP-52) are rejected with a
+  clear message; hybrids work through their v1 part.
+- No web seeds (BEP-19): the URL shows up in `--info`, but is not used as a
+  source.
+- No µTP, no connection encryption (MSE) and no UPnP/NAT-PMP — without port
+  forwarding, outbound connections only.
+- No IPv6 on UDP trackers.
+
+## License
+
+MIT — see `LICENSE`.

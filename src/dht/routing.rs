@@ -1,21 +1,21 @@
-//! Tabela de roteamento Kademlia.
+//! Kademlia routing table.
 //!
-//! 160 baldes, um por bit de prefixo comum com o nosso id. Cada balde guarda
-//! até `K` nós e prefere os antigos: um nó que já está de pé há horas tem mais
-//! chance de continuar de pé do que um recém-chegado.
+//! 160 buckets, one per bit of common prefix with our id. Each bucket holds
+//! up to `K` nodes and prefers the old ones: a node that has already been up
+//! for hours is more likely to stay up than a newcomer.
 
 use super::krpc::NodeInfo;
 use crate::id::Id20;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-/// Tamanho do balde, fixado em 8 pela BEP-5.
+/// Bucket size, fixed at 8 by BEP-5.
 pub const K: usize = 8;
 
-/// Sem notícias por esse tempo, o nó vira "duvidoso" e precisa de um ping.
-const TEMPO_DUVIDOSO: Duration = Duration::from_secs(15 * 60);
-/// Falhas seguidas até descartar o nó.
-const MAX_FALHAS: u32 = 3;
+/// With no news for this long, the node becomes "questionable" and needs a ping.
+const QUESTIONABLE_AFTER: Duration = Duration::from_secs(15 * 60);
+/// Consecutive failures before discarding the node.
+const MAX_FAILURES: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeState {
@@ -41,9 +41,9 @@ impl Node {
     }
 
     pub fn state(&self) -> NodeState {
-        if self.failures >= MAX_FALHAS {
+        if self.failures >= MAX_FAILURES {
             NodeState::Bad
-        } else if self.last_seen.elapsed() > TEMPO_DUVIDOSO {
+        } else if self.last_seen.elapsed() > QUESTIONABLE_AFTER {
             NodeState::Questionable
         } else {
             NodeState::Good
@@ -74,6 +74,10 @@ impl RoutingTable {
         self.buckets.iter().map(|b| b.nodes.len()).sum()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn count_good(&self) -> usize {
         self.buckets
             .iter()
@@ -86,11 +90,11 @@ impl RoutingTable {
         self.own_id.bucket_index(id).min(159)
     }
 
-    /// Registra um nó visto na rede.
+    /// Records a node seen on the network.
     ///
-    /// Devolve `true` se ele entrou na tabela. Baldes cheios só abrem espaço
-    /// descartando um nó ruim — trocar um nó estável por um desconhecido só
-    /// facilitaria a vida de quem quer poluir a tabela.
+    /// Returns `true` if it entered the table. Full buckets only make room by
+    /// discarding a bad node - swapping a stable node for an unknown one would
+    /// only make life easier for anyone trying to pollute the table.
     pub fn add(&mut self, info: NodeInfo) -> bool {
         if info.id == self.own_id || !crate::compact::is_usable(&info.addr) {
             return false;
@@ -98,10 +102,10 @@ impl RoutingTable {
         let idx = self.bucket_for(&info.id);
         let bucket = &mut self.buckets[idx];
 
-        if let Some(existente) = bucket.nodes.iter_mut().find(|n| n.info.id == info.id) {
-            existente.info.addr = info.addr;
-            existente.last_seen = Instant::now();
-            existente.failures = 0;
+        if let Some(existing) = bucket.nodes.iter_mut().find(|n| n.info.id == info.id) {
+            existing.info.addr = info.addr;
+            existing.last_seen = Instant::now();
+            existing.failures = 0;
             bucket.last_changed = Some(Instant::now());
             return true;
         }
@@ -110,24 +114,32 @@ impl RoutingTable {
             bucket.last_changed = Some(Instant::now());
             return true;
         }
-        if let Some(ruim) = bucket.nodes.iter().position(|n| n.state() == NodeState::Bad) {
-            bucket.nodes[ruim] = Node::new(info);
+        if let Some(bad) = bucket
+            .nodes
+            .iter()
+            .position(|n| n.state() == NodeState::Bad)
+        {
+            bucket.nodes[bad] = Node::new(info);
             bucket.last_changed = Some(Instant::now());
             return true;
         }
         false
     }
 
-    /// O nó respondeu: renova a validade dele.
+    /// The node responded: renew its validity.
     pub fn touch(&mut self, id: &Id20) {
         let idx = self.bucket_for(id);
-        if let Some(node) = self.buckets[idx].nodes.iter_mut().find(|n| n.info.id == *id) {
+        if let Some(node) = self.buckets[idx]
+            .nodes
+            .iter_mut()
+            .find(|n| n.info.id == *id)
+        {
             node.last_seen = Instant::now();
             node.failures = 0;
         }
     }
 
-    /// O nó não respondeu; depois de algumas vezes ele é removido.
+    /// The node did not respond; after a few times it is removed.
     pub fn mark_failed(&mut self, id: &Id20) {
         let idx = self.bucket_for(id);
         let bucket = &mut self.buckets[idx];
@@ -139,19 +151,23 @@ impl RoutingTable {
         }
     }
 
-    /// Os `n` nós mais próximos de `target`, do mais próximo ao mais distante.
+    /// The `n` nodes closest to `target`, from closest to farthest.
     pub fn closest(&self, target: &Id20, n: usize) -> Vec<NodeInfo> {
-        let mut candidatos: Vec<&Node> = self
+        let mut candidates: Vec<&Node> = self
             .buckets
             .iter()
             .flat_map(|b| &b.nodes)
             .filter(|node| node.state() != NodeState::Bad)
             .collect();
-        candidatos.sort_unstable_by_key(|node| node.info.id.distance(target));
-        candidatos.into_iter().take(n).map(|node| node.info).collect()
+        candidates.sort_unstable_by_key(|node| node.info.id.distance(target));
+        candidates
+            .into_iter()
+            .take(n)
+            .map(|node| node.info)
+            .collect()
     }
 
-    /// Nós duvidosos que merecem um ping antes de serem descartados.
+    /// Questionable nodes that deserve a ping before being discarded.
     pub fn questionable(&self) -> Vec<NodeInfo> {
         self.buckets
             .iter()
@@ -161,19 +177,19 @@ impl RoutingTable {
             .collect()
     }
 
-    /// Ids aleatórios dentro de baldes parados, para reanimá-los com um
-    /// `find_node`. Sem isso a tabela envelhece e a busca vai perdendo alcance.
+    /// Random ids inside stale buckets, to revive them with a `find_node`.
+    /// Without this the table ages and lookups gradually lose reach.
     pub fn refresh_targets(&self) -> Vec<Id20> {
-        let mut alvos = Vec::new();
+        let mut targets = Vec::new();
         for (i, bucket) in self.buckets.iter().enumerate() {
-            let parado = bucket
+            let stale = bucket
                 .last_changed
-                .is_none_or(|t| t.elapsed() > TEMPO_DUVIDOSO);
-            if parado && !bucket.nodes.is_empty() {
-                alvos.push(random_in_bucket(&self.own_id, i));
+                .is_none_or(|t| t.elapsed() > QUESTIONABLE_AFTER);
+            if stale && !bucket.nodes.is_empty() {
+                targets.push(random_in_bucket(&self.own_id, i));
             }
         }
-        alvos
+        targets
     }
 
     pub fn mark_bucket_refreshed(&mut self, target: &Id20) {
@@ -181,8 +197,8 @@ impl RoutingTable {
         self.buckets[idx].last_changed = Some(Instant::now());
     }
 
-    /// Snapshot dos nós vivos, para gravar em disco e religar o DHT rápido na
-    /// próxima execução.
+    /// Snapshot of live nodes, to write to disk and restart the DHT quickly on
+    /// the next run.
     pub fn snapshot(&self) -> Vec<(Id20, SocketAddr)> {
         self.buckets
             .iter()
@@ -193,8 +209,8 @@ impl RoutingTable {
     }
 }
 
-/// Id aleatório que cai no balde `index` em relação a `own_id`: mesmos
-/// `index` bits iniciais, bit seguinte invertido, resto aleatório.
+/// Random id that falls in bucket `index` relative to `own_id`: same initial
+/// `index` bits, next bit inverted, rest random.
 fn random_in_bucket(own_id: &Id20, index: usize) -> Id20 {
     let mut bytes = Id20::random().0;
     for bit in 0..index.min(159) {
@@ -210,118 +226,118 @@ fn random_in_bucket(own_id: &Id20, index: usize) -> Id20 {
 mod tests {
     use super::*;
 
-    fn no(id: Id20, porta: u16) -> NodeInfo {
+    fn node(id: Id20, port: u16) -> NodeInfo {
         NodeInfo {
             id,
-            addr: format!("1.2.3.4:{porta}").parse().unwrap(),
+            addr: format!("1.2.3.4:{port}").parse().unwrap(),
         }
     }
 
     #[test]
-    fn balde_enche_e_para_de_aceitar() {
-        let meu = Id20([0; 20]);
-        let mut tabela = RoutingTable::new(meu);
+    fn bucket_fills_and_stops_accepting() {
+        let own = Id20([0; 20]);
+        let mut table = RoutingTable::new(own);
 
-        // Todos com o primeiro bit ligado caem no mesmo balde (índice 0).
+        // All with the first bit set fall in the same bucket (index 0).
         for i in 0..K {
             let mut id = [0u8; 20];
             id[0] = 0x80;
             id[19] = i as u8;
-            assert!(tabela.add(no(Id20(id), 1000 + i as u16)));
+            assert!(table.add(node(Id20(id), 1000 + i as u16)));
         }
-        assert_eq!(tabela.len(), K);
+        assert_eq!(table.len(), K);
 
         let mut extra = [0u8; 20];
         extra[0] = 0x80;
         extra[19] = 99;
-        assert!(!tabela.add(no(Id20(extra), 9999)), "balde cheio recusa");
+        assert!(!table.add(node(Id20(extra), 9999)), "a full bucket refuses");
 
-        // Um id com prefixo diferente vai para outro balde e cabe.
-        let mut outro = [0u8; 20];
-        outro[0] = 0x40;
-        assert!(tabela.add(no(Id20(outro), 8888)));
-        assert_eq!(tabela.len(), K + 1);
+        // An id with a different prefix goes to another bucket and fits.
+        let mut other = [0u8; 20];
+        other[0] = 0x40;
+        assert!(table.add(node(Id20(other), 8888)));
+        assert_eq!(table.len(), K + 1);
     }
 
     #[test]
-    fn no_ruim_abre_espaco() {
-        let mut tabela = RoutingTable::new(Id20([0; 20]));
+    fn bad_node_frees_space() {
+        let mut table = RoutingTable::new(Id20([0; 20]));
         let mut ids = Vec::new();
         for i in 0..K {
             let mut id = [0u8; 20];
             id[0] = 0x80;
             id[19] = i as u8;
             ids.push(Id20(id));
-            tabela.add(no(Id20(id), 1000 + i as u16));
+            table.add(node(Id20(id), 1000 + i as u16));
         }
 
-        // Três falhas seguidas removem o nó da tabela.
-        for _ in 0..MAX_FALHAS {
-            tabela.mark_failed(&ids[0]);
+        // Three consecutive failures remove the node from the table.
+        for _ in 0..MAX_FAILURES {
+            table.mark_failed(&ids[0]);
         }
-        assert_eq!(tabela.len(), K - 1);
+        assert_eq!(table.len(), K - 1);
 
-        let mut novo = [0u8; 20];
-        novo[0] = 0x80;
-        novo[19] = 77;
-        assert!(tabela.add(no(Id20(novo), 7777)));
+        let mut new_id = [0u8; 20];
+        new_id[0] = 0x80;
+        new_id[19] = 77;
+        assert!(table.add(node(Id20(new_id), 7777)));
     }
 
     #[test]
-    fn nao_aceita_a_si_mesmo_nem_lixo() {
-        let meu = Id20([9; 20]);
-        let mut tabela = RoutingTable::new(meu);
-        assert!(!tabela.add(no(meu, 6881)), "nós mesmos não entramos");
+    fn rejects_self_and_garbage() {
+        let own = Id20([9; 20]);
+        let mut table = RoutingTable::new(own);
+        assert!(!table.add(node(own, 6881)), "we ourselves do not enter");
         assert!(
-            !tabela.add(NodeInfo {
+            !table.add(NodeInfo {
                 id: Id20::random(),
                 addr: "1.2.3.4:0".parse().unwrap(),
             }),
-            "porta 0 não serve"
+            "port 0 is useless"
         );
-        // Loopback entra: um nó DHT na própria máquina é legítimo.
-        assert!(tabela.add(NodeInfo {
+        // Loopback is accepted: a DHT node on the same machine is legitimate.
+        assert!(table.add(NodeInfo {
             id: Id20::random(),
             addr: "127.0.0.1:6881".parse().unwrap(),
         }));
     }
 
     #[test]
-    fn closest_ordena_por_distancia() {
-        let mut tabela = RoutingTable::new(Id20([0; 20]));
-        let alvo = Id20([0xff; 20]);
+    fn closest_orders_by_distance() {
+        let mut table = RoutingTable::new(Id20([0; 20]));
+        let target = Id20([0xff; 20]);
 
-        let perto = Id20([0xfe; 20]);
-        let longe = Id20([0x01; 20]);
-        tabela.add(no(longe, 1));
-        tabela.add(no(perto, 2));
+        let near = Id20([0xfe; 20]);
+        let far = Id20([0x01; 20]);
+        table.add(node(far, 1));
+        table.add(node(near, 2));
 
-        let mais_proximos = tabela.closest(&alvo, 5);
-        assert_eq!(mais_proximos.len(), 2);
-        assert_eq!(mais_proximos[0].id, perto, "o mais próximo vem primeiro");
-        assert_eq!(tabela.closest(&alvo, 1).len(), 1, "respeita o limite");
+        let closest = table.closest(&target, 5);
+        assert_eq!(closest.len(), 2);
+        assert_eq!(closest[0].id, near, "the closest comes first");
+        assert_eq!(table.closest(&target, 1).len(), 1, "respects the limit");
     }
 
     #[test]
-    fn atualiza_endereco_de_no_conhecido() {
-        let mut tabela = RoutingTable::new(Id20([0; 20]));
+    fn updates_address_of_known_node() {
+        let mut table = RoutingTable::new(Id20([0; 20]));
         let id = Id20([0x80; 20]);
-        tabela.add(no(id, 1111));
-        tabela.add(no(id, 2222));
-        assert_eq!(tabela.len(), 1, "mesmo id não duplica");
-        assert_eq!(tabela.closest(&id, 1)[0].addr.port(), 2222);
+        table.add(node(id, 1111));
+        table.add(node(id, 2222));
+        assert_eq!(table.len(), 1, "same id does not duplicate");
+        assert_eq!(table.closest(&id, 1)[0].addr.port(), 2222);
     }
 
     #[test]
-    fn alvo_de_refresh_cai_no_balde_certo() {
-        let meu = Id20::random();
-        let tabela = RoutingTable::new(meu);
+    fn refresh_target_falls_in_the_right_bucket() {
+        let own = Id20::random();
+        let table = RoutingTable::new(own);
         for index in [0, 1, 7, 8, 63, 159] {
-            let alvo = random_in_bucket(&meu, index);
+            let target = random_in_bucket(&own, index);
             assert_eq!(
-                tabela.bucket_for(&alvo),
+                table.bucket_for(&target),
                 index,
-                "alvo do balde {index} caiu no balde errado"
+                "target for bucket {index} fell in the wrong bucket"
             );
         }
     }

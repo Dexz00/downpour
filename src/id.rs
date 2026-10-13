@@ -1,5 +1,5 @@
-//! Identificadores de 20 bytes — info_hash, peer id e node id do DHT
-//! compartilham o mesmo formato, então compartilham o mesmo tipo.
+//! 20-byte identifiers — info_hash, peer id and DHT node id
+//! share the same format, so they share the same type.
 
 use anyhow::{Result, bail};
 use rand::RngExt;
@@ -30,14 +30,14 @@ impl Id20 {
 
     pub fn from_slice(raw: &[u8]) -> Result<Self> {
         if raw.len() != 20 {
-            bail!("identificador deve ter 20 bytes, recebi {}", raw.len());
+            bail!("identifier must be 20 bytes, got {}", raw.len());
         }
         let mut bytes = [0u8; 20];
         bytes.copy_from_slice(raw);
         Ok(Id20(bytes))
     }
 
-    /// Magnets antigos codificam o info_hash em base32 (32 caracteres).
+    /// Old magnets encode the info_hash in base32 (32 characters).
     pub fn from_base32(s: &str) -> Result<Self> {
         const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
         let mut out = Vec::with_capacity(20);
@@ -49,7 +49,7 @@ impl Id20 {
                 continue;
             }
             let Some(v) = ALPHABET.iter().position(|a| *a == c) else {
-                bail!("caractere base32 inválido: `{}`", c as char);
+                bail!("invalid base32 character: `{}`", c as char);
             };
             acc = (acc << 5) | v as u32;
             bits += 5;
@@ -61,16 +61,16 @@ impl Id20 {
         Self::from_slice(&out)
     }
 
-    /// Distância XOR usada pelo Kademlia para ordenar nós.
+    /// XOR distance used by Kademlia to order nodes.
     pub fn distance(&self, other: &Id20) -> [u8; 20] {
         let mut d = [0u8; 20];
-        for ((destino, a), b) in d.iter_mut().zip(&self.0).zip(&other.0) {
-            *destino = a ^ b;
+        for ((dest, a), b) in d.iter_mut().zip(&self.0).zip(&other.0) {
+            *dest = a ^ b;
         }
         d
     }
 
-    /// Índice do bucket do DHT: número de bits idênticos no prefixo.
+    /// DHT bucket index: number of identical bits in the prefix.
     pub fn bucket_index(&self, other: &Id20) -> usize {
         let d = self.distance(other);
         for (i, byte) in d.iter().enumerate() {
@@ -94,8 +94,8 @@ impl fmt::Debug for Id20 {
     }
 }
 
-/// Peer id no estilo Azureus: `-TR0001-` seguido de 12 bytes aleatórios.
-/// O prefixo importa: alguns peers rejeitam clientes que não reconhecem.
+/// Azureus-style peer id: `-TR0001-` followed by 12 random bytes.
+/// The prefix matters: some peers reject clients they do not recognize.
 pub fn generate_peer_id() -> Id20 {
     let mut bytes = [0u8; 20];
     bytes[..8].copy_from_slice(b"-TR0001-");
@@ -108,12 +108,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converte_hex_e_base32() {
+    fn converts_hex_and_base32() {
         let hexed = "0123456789abcdef0123456789abcdef01234567";
         let id = Id20::from_hex(hexed).unwrap();
         assert_eq!(id.to_hex(), hexed);
 
-        // Vetor conhecido: os bytes 0x01..0x14 em base32.
+        // Known vector: the bytes 0x01..0x14 in base32.
         let b32 = Id20::from_base32("AEBAGBAFAYDQQCIKBMGA2DQPCAIREEYU").unwrap();
         assert_eq!(b32.to_hex(), "0102030405060708090a0b0c0d0e0f1011121314");
         assert!(Id20::from_base32("!!!").is_err());
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn bucket_index_conta_prefixo_comum() {
+    fn bucket_index_counts_common_prefix() {
         let a = Id20([0u8; 20]);
         let mut b = [0u8; 20];
         b[0] = 0b0100_0000;

@@ -1,5 +1,11 @@
 /target
 
-# copia do binario ao lado do atalho, e a pasta de destino escolhida
+# copy of the binary next to the shortcut, and the chosen destination folder
 /torrra.exe
+/destination.txt
 /destino.txt
+
+# fuzzing build output, corpora and crash artifacts
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts

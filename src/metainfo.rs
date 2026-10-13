@@ -1,5 +1,5 @@
-//! Leitura de arquivos `.torrent` (BEP-3) e do dicionário `info` isolado
-//! (que também chega pela rede via `ut_metadata`, BEP-9).
+//! Reading `.torrent` files (BEP-3) and the isolated `info` dictionary
+//! (which also arrives over the network via `ut_metadata`, BEP-9).
 
 use crate::bencode::{self, Value};
 use crate::id::Id20;
@@ -7,14 +7,14 @@ use anyhow::{Context, Result, bail};
 use sha1::{Digest, Sha1};
 use std::path::{Path, PathBuf};
 
-/// Um arquivo dentro do torrent, já posicionado no fluxo concatenado de bytes
-/// que as peças cobrem.
+/// A file inside the torrent, already positioned in the concatenated byte
+/// stream that the pieces cover.
 #[derive(Debug, Clone)]
 pub struct FileEntry {
-    /// Caminho relativo já saneado, seguro para juntar ao diretório de saída.
+    /// Already sanitized relative path, safe to join to the output directory.
     pub path: PathBuf,
     pub length: u64,
-    /// Deslocamento do início deste arquivo dentro do fluxo do torrent.
+    /// Offset of the start of this file within the torrent stream.
     pub offset: u64,
 }
 
@@ -24,7 +24,7 @@ impl FileEntry {
     }
 }
 
-/// O dicionário `info` decodificado — tudo que define *o conteúdo* do torrent.
+/// The decoded `info` dictionary — everything that defines the *content* of the torrent.
 #[derive(Debug, Clone)]
 pub struct Info {
     pub info_hash: Id20,
@@ -33,16 +33,16 @@ pub struct Info {
     pub piece_hashes: Vec<Id20>,
     pub files: Vec<FileEntry>,
     pub total_length: u64,
-    /// Torrent privado: proíbe DHT e PEX (BEP-27).
+    /// Private torrent: forbids DHT and PEX (BEP-27).
     pub private: bool,
-    /// Bytes originais do dicionário, servidos a outros peers via `ut_metadata`.
+    /// Original dictionary bytes, served to other peers via `ut_metadata`.
     pub raw: Vec<u8>,
 }
 
 impl Info {
-    /// Decodifica um dicionário `info` a partir dos seus bytes bencode crus.
+    /// Decodes an `info` dictionary from its raw bencode bytes.
     pub fn from_raw(raw: &[u8]) -> Result<Info> {
-        let decoded = bencode::decode(raw).context("dicionário `info` inválido")?;
+        let decoded = bencode::decode(raw).context("invalid `info` dictionary")?;
         Info::from_value(&decoded.value, raw)
     }
 
@@ -52,46 +52,51 @@ impl Info {
         let name = info
             .str_at("name")
             .or_else(|| info.str_at("name.utf-8"))
-            .context("`info.name` ausente")?;
+            .context("missing `info.name`")?;
 
         let piece_length = info
             .int_at("piece length")
-            .context("`info.piece length` ausente")?;
+            .context("missing `info.piece length`")?;
         if piece_length <= 0 || piece_length > 128 << 20 {
-            bail!("`piece length` fora do intervalo aceitável: {piece_length}");
+            bail!("`piece length` out of acceptable range: {piece_length}");
         }
         let piece_length = piece_length as u32;
 
         let pieces = info
             .bytes_at("pieces")
-            .context("`info.pieces` ausente — torrents somente v2 não são suportados")?;
+            .context("missing `info.pieces` — v2-only torrents are not supported")?;
         if pieces.len() % 20 != 0 {
-            bail!("`info.pieces` tem {} bytes, não múltiplo de 20", pieces.len());
+            bail!(
+                "`info.pieces` is {} bytes, not a multiple of 20",
+                pieces.len()
+            );
         }
         let piece_hashes: Vec<Id20> = pieces
-            .chunks_exact(20)
-            .map(|c| Id20::from_slice(c).expect("chunk de 20 bytes"))
+            .as_chunks::<20>()
+            .0
+            .iter()
+            .map(|c| Id20::from_slice(c).expect("20-byte chunk"))
             .collect();
 
-        let root = sanitize_component(&name).context("nome do torrent inválido")?;
+        let root = sanitize_component(&name).context("invalid torrent name")?;
         let mut files = Vec::new();
         let mut offset = 0u64;
 
         match info.list_at("files") {
-            // Multi-arquivo: `name` vira o diretório raiz.
+            // Multi-file: `name` becomes the root directory.
             Some(entries) => {
                 for entry in entries {
                     let length = entry
                         .int_at("length")
-                        .context("arquivo sem `length`")?
+                        .context("file without `length`")?
                         .max(0) as u64;
                     let components = entry
                         .list_at("path")
                         .or_else(|| entry.list_at("path.utf-8"))
-                        .context("arquivo sem `path`")?;
+                        .context("file without `path`")?;
                     let mut path = PathBuf::from(&root);
                     for c in components {
-                        let part = c.as_str().context("componente de path não é string")?;
+                        let part = c.as_str().context("path component is not a string")?;
                         path.push(sanitize_component(&part)?);
                     }
                     files.push(FileEntry {
@@ -102,11 +107,11 @@ impl Info {
                     offset += length;
                 }
             }
-            // Arquivo único: `name` é o próprio arquivo.
+            // Single file: `name` is the file itself.
             None => {
                 let length = info
                     .int_at("length")
-                    .context("torrent sem `length` nem `files`")?
+                    .context("torrent without `length` or `files`")?
                     .max(0) as u64;
                 files.push(FileEntry {
                     path: PathBuf::from(&root),
@@ -121,7 +126,7 @@ impl Info {
         let expected = piece_hashes.len() as u64 * piece_length as u64;
         if total_length > expected || expected.saturating_sub(total_length) >= piece_length as u64 {
             bail!(
-                "tamanho total ({total_length}) não bate com {} peças de {piece_length} bytes",
+                "total length ({total_length}) does not match {} pieces of {piece_length} bytes",
                 piece_hashes.len()
             );
         }
@@ -142,37 +147,36 @@ impl Info {
         self.piece_hashes.len()
     }
 
-    /// A última peça costuma ser menor que as demais.
+    /// The last piece is usually smaller than the others.
     pub fn piece_size(&self, index: usize) -> u32 {
         let start = index as u64 * self.piece_length as u64;
         let remaining = self.total_length.saturating_sub(start);
         remaining.min(self.piece_length as u64) as u32
     }
-
 }
 
-/// O arquivo `.torrent` completo: o `info` mais os metadados auxiliares.
+/// The complete `.torrent` file: the `info` plus the auxiliary metadata.
 #[derive(Debug, Clone)]
 pub struct Metainfo {
     pub info: Info,
-    /// Trackers agrupados em tiers (BEP-12): tenta o tier 1 inteiro, depois o 2…
+    /// Trackers grouped in tiers (BEP-12): try the whole tier 1, then tier 2…
     pub tiers: Vec<Vec<String>>,
     pub comment: Option<String>,
     pub created_by: Option<String>,
     pub creation_date: Option<i64>,
-    /// Web seeds (BEP-19), usados como fonte HTTP adicional.
+    /// Web seeds (BEP-19), used as an additional HTTP source.
     pub web_seeds: Vec<String>,
-    /// Nós DHT embutidos no torrent (BEP-5), úteis para bootstrap.
+    /// DHT nodes embedded in the torrent (BEP-5), useful for bootstrap.
     pub dht_nodes: Vec<String>,
 }
 
 impl Metainfo {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Metainfo> {
         let path = path.as_ref();
-        let raw = std::fs::read(path)
-            .with_context(|| format!("não consegui ler {}", path.display()))?;
+        let raw =
+            std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
         Metainfo::from_bytes(&raw)
-            .with_context(|| format!("`{}` não é um .torrent válido", path.display()))
+            .with_context(|| format!("`{}` is not a valid .torrent", path.display()))
     }
 
     pub fn from_bytes(raw: &[u8]) -> Result<Metainfo> {
@@ -181,7 +185,7 @@ impl Metainfo {
 
         let info_raw = decoded
             .raw(raw, "info")
-            .context("`.torrent` sem dicionário `info`")?;
+            .context("`.torrent` without `info` dictionary")?;
         let info = Info::from_value(root.require("info")?, info_raw)?;
 
         let mut tiers: Vec<Vec<String>> = Vec::new();
@@ -199,7 +203,7 @@ impl Metainfo {
                 }
             }
         }
-        // `announce` só entra se ainda não estiver coberto pelo announce-list.
+        // `announce` only enters if not already covered by the announce-list.
         if let Some(announce) = root.str_at("announce")
             && !announce.is_empty()
             && !tiers.iter().flatten().any(|u| *u == announce)
@@ -240,16 +244,16 @@ impl Metainfo {
     }
 }
 
-/// Nomes reservados pelo Windows, independentemente da extensão.
-const RESERVADOS: &[&str] = &[
+/// Names reserved by Windows, regardless of the extension.
+const RESERVED: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// Converte um componente de caminho vindo do torrent em algo seguro de escrever.
+/// Converts a path component coming from the torrent into something safe to write.
 ///
-/// Um `.torrent` é um arquivo de terceiros: sem isso, um `path` como
-/// `["..", "..", "autorun.inf"]` escreveria fora do diretório de destino.
+/// A `.torrent` is a third-party file: without this, a `path` like
+/// `["..", "..", "autorun.inf"]` would write outside the destination directory.
 fn sanitize_component(raw: &str) -> Result<String> {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -259,16 +263,16 @@ fn sanitize_component(raw: &str) -> Result<String> {
             c => out.push(c),
         }
     }
-    // Espaços e pontos finais são silenciosamente removidos pelo Windows,
-    // o que faria o caminho gravado divergir do caminho verificado.
+    // Trailing spaces and dots are silently removed by Windows, which would
+    // make the written path diverge from the verified path.
     let trimmed = out.trim_end_matches([' ', '.']).to_string();
     let out = if trimmed.is_empty() { out } else { trimmed };
 
     if out.is_empty() || out == "." || out == ".." {
-        bail!("componente de caminho inseguro: `{raw}`");
+        bail!("unsafe path component: `{raw}`");
     }
     let stem = out.split('.').next().unwrap_or(&out).to_ascii_uppercase();
-    if RESERVADOS.contains(&stem.as_str()) {
+    if RESERVED.contains(&stem.as_str()) {
         return Ok(format!("_{out}"));
     }
     Ok(out)
@@ -278,21 +282,21 @@ fn sanitize_component(raw: &str) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// Monta um `.torrent` mínimo de dois arquivos.
-    fn torrent_de_teste() -> Vec<u8> {
-        let arquivo = |len: i64, partes: &[&str]| {
+    /// Builds a minimal two-file `.torrent`.
+    fn test_torrent() -> Vec<u8> {
+        let file = |len: i64, parts: &[&str]| {
             Value::dict([
                 ("length", Value::Int(len)),
                 (
                     "path",
-                    Value::List(partes.iter().map(|p| Value::bytes(*p)).collect()),
+                    Value::List(parts.iter().map(|p| Value::bytes(*p)).collect()),
                 ),
             ])
         };
         let info = Value::dict([
             (
                 "files",
-                Value::List(vec![arquivo(6, &["a.txt"]), arquivo(4, &["sub", "b.txt"])]),
+                Value::List(vec![file(6, &["a.txt"]), file(4, &["sub", "b.txt"])]),
             ),
             ("name", Value::bytes("demo")),
             ("piece length", Value::Int(16384)),
@@ -305,8 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn le_torrent_multi_arquivo() {
-        let meta = Metainfo::from_bytes(&torrent_de_teste()).unwrap();
+    fn reads_multi_file_torrent() {
+        let meta = Metainfo::from_bytes(&test_torrent()).unwrap();
         assert_eq!(meta.info.name, "demo");
         assert_eq!(meta.info.total_length, 10);
         assert_eq!(meta.info.files.len(), 2);
@@ -316,24 +320,24 @@ mod tests {
     }
 
     #[test]
-    fn info_hash_vem_dos_bytes_originais() {
-        let meta = Metainfo::from_bytes(&torrent_de_teste()).unwrap();
-        let esperado = Id20(Sha1::digest(&meta.info.raw).into());
-        assert_eq!(meta.info.info_hash, esperado);
+    fn info_hash_comes_from_original_bytes() {
+        let meta = Metainfo::from_bytes(&test_torrent()).unwrap();
+        let expected = Id20(Sha1::digest(&meta.info.raw).into());
+        assert_eq!(meta.info.info_hash, expected);
     }
 
     #[test]
-    fn ultima_peca_e_menor() {
-        let meta = Metainfo::from_bytes(&torrent_de_teste()).unwrap();
+    fn last_piece_is_smaller() {
+        let meta = Metainfo::from_bytes(&test_torrent()).unwrap();
         assert_eq!(meta.info.num_pieces(), 1);
         assert_eq!(meta.info.piece_size(0), 10);
     }
 
     #[test]
-    fn sanitiza_travessia_de_diretorio() {
+    fn sanitizes_directory_traversal() {
         assert!(sanitize_component("..").is_err());
         assert_eq!(sanitize_component("a/b").unwrap(), "a_b");
         assert_eq!(sanitize_component("nul").unwrap(), "_nul");
-        assert_eq!(sanitize_component("fim. ").unwrap(), "fim");
+        assert_eq!(sanitize_component("end. ").unwrap(), "end");
     }
 }

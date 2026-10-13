@@ -1,0 +1,44 @@
+[package]
+name = "torrra-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+torrra = { path = ".." }
+
+# Detach this crate from the parent package so a normal `cargo build`/`test`
+# at the repository root never tries to build the fuzz targets.
+[workspace]
+
+[[bin]]
+name = "bencode"
+path = "fuzz_targets/bencode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peer_message"
+path = "fuzz_targets/peer_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "krpc"
+path = "fuzz_targets/krpc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metainfo"
+path = "fuzz_targets/metainfo.rs"
+test = false
+doc = false
+bench = false

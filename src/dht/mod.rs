@@ -1,8 +1,8 @@
-//! Nó DHT (BEP-5).
+//! DHT node (BEP-5).
 //!
-//! Serve para duas coisas: descobrir peers de um info_hash sem depender de
-//! tracker, e responder às consultas de outros nós — um DHT em que ninguém
-//! responde não existe.
+//! It serves two purposes: discovering peers for an info_hash without relying
+//! on a tracker, and answering queries from other nodes - a DHT where nobody
+//! answers does not exist.
 
 pub mod krpc;
 pub mod routing;
@@ -16,14 +16,14 @@ use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
-/// Roteadores públicos usados para entrar na rede.
+/// Public routers used to join the network.
 pub const BOOTSTRAP: &[&str] = &[
     "router.bittorrent.com:6881",
     "dht.transmissionbt.com:6881",
@@ -31,13 +31,13 @@ pub const BOOTSTRAP: &[&str] = &[
     "dht.libtorrent.org:25401",
 ];
 
-/// Consultas simultâneas durante uma busca (o "α" do Kademlia).
+/// Simultaneous queries during a lookup (Kademlia's "alpha").
 const ALPHA: usize = 8;
-/// Quanto esperamos por uma resposta.
+/// How long we wait for a response.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(4);
-/// Rodadas máximas de uma busca iterativa, para ela sempre terminar.
-const MAX_RODADAS: usize = 12;
-/// Validade de um peer anunciado a nós.
+/// Maximum rounds of an iterative lookup, so it always terminates.
+const MAX_ROUNDS: usize = 12;
+/// Lifetime of a peer announced to us.
 const PEER_TTL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Default)]
@@ -51,29 +51,29 @@ pub struct Dht {
     socket: UdpSocket,
     node_id: Id20,
     routing: Mutex<RoutingTable>,
-    /// Consultas nossas ainda sem resposta, por transaction id.
+    /// Our queries that are still unanswered, by transaction id.
     pending: Mutex<HashMap<u16, oneshot::Sender<Result<Response, String>>>>,
     next_tid: Mutex<u16>,
-    /// Peers que outros nós anunciaram a nós.
+    /// Peers that other nodes announced to us.
     peer_store: Mutex<HashMap<Id20, Vec<(SocketAddr, Instant)>>>,
-    /// Segredos usados para assinar tokens (o atual e o anterior).
+    /// Secrets used to sign tokens (the current one and the previous one).
     secrets: Mutex<[[u8; 16]; 2]>,
-    stats: Estatisticas,
+    stats: Statistics,
 }
 
 #[derive(Default)]
-struct Estatisticas {
+struct Statistics {
     queries_sent: AtomicU64,
     queries_received: AtomicU64,
     peers_found: AtomicU64,
 }
 
 impl Dht {
-    /// Abre o socket UDP e sobe as tasks de recepção e manutenção.
+    /// Opens the UDP socket and starts the receive and maintenance tasks.
     pub async fn bind(port: u16) -> Result<Arc<Dht>> {
         let socket = UdpSocket::bind(("0.0.0.0", port))
             .await
-            .with_context(|| format!("não consegui abrir a porta UDP {port} para o DHT"))?;
+            .with_context(|| format!("could not open UDP port {port} for the DHT"))?;
         let node_id = Id20::random();
 
         let dht = Arc::new(Dht {
@@ -84,7 +84,7 @@ impl Dht {
             next_tid: Mutex::new(0),
             peer_store: Mutex::new(HashMap::new()),
             secrets: Mutex::new([rand::rng().random(), rand::rng().random()]),
-            stats: Estatisticas::default(),
+            stats: Statistics::default(),
         });
 
         tokio::spawn(recv_loop(Arc::clone(&dht)));
@@ -103,7 +103,7 @@ impl Dht {
     }
 
     pub fn stats(&self) -> DhtStats {
-        let routing = self.routing.lock().unwrap();
+        let routing = self.routing.lock().unwrap_or_else(|e| e.into_inner());
         DhtStats {
             nodes: routing.len(),
             good_nodes: routing.count_good(),
@@ -112,29 +112,39 @@ impl Dht {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.routing.lock().unwrap().count_good() > 0
+        self.routing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .count_good()
+            > 0
     }
 
-    /// Nós conhecidos, para salvar entre execuções.
+    /// Known nodes, to save between runs.
     pub fn snapshot(&self) -> Vec<(Id20, SocketAddr)> {
-        self.routing.lock().unwrap().snapshot()
+        self.routing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot()
     }
 
     pub fn add_node(&self, info: NodeInfo) {
-        self.routing.lock().unwrap().add(info);
+        self.routing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .add(info);
     }
 
-    /// Entra na rede perguntando por nós mesmos aos roteadores conhecidos.
+    /// Joins the network by querying the known routers for ourselves.
     pub async fn bootstrap(self: &Arc<Self>, hosts: &[String]) -> usize {
-        let mut tarefas = JoinSet::new();
+        let mut tasks = JoinSet::new();
         for host in hosts {
             let host = host.clone();
             let this = Arc::clone(self);
-            tarefas.spawn(async move {
+            tasks.spawn(async move {
                 let Ok(addrs) = lookup_host(&host).await else {
                     return 0;
                 };
-                let mut achados = 0;
+                let mut found = 0;
                 for addr in addrs.take(2) {
                     if let Ok(resp) = this
                         .query(
@@ -146,69 +156,80 @@ impl Dht {
                         )
                         .await
                     {
-                        let mut routing = this.routing.lock().unwrap();
-                        // O roteador em si não entra na tabela (ele não guarda
-                        // dados); só os nós que ele indicou.
-                        for no in &resp.nodes {
-                            if routing.add(*no) {
-                                achados += 1;
+                        let mut routing = this.routing.lock().unwrap_or_else(|e| e.into_inner());
+                        // The router itself does not enter the table (it does not store
+                        // data); only the nodes it pointed to do.
+                        for node in &resp.nodes {
+                            if routing.add(*node) {
+                                found += 1;
                             }
                         }
                     }
                 }
-                achados
+                found
             });
         }
         let mut total = 0;
-        while let Some(r) = tarefas.join_next().await {
+        while let Some(r) = tasks.join_next().await {
             total += r.unwrap_or(0);
         }
-        crate::log::log!("dht", "bootstrap trouxe {total} nós");
-        // Uma busca por um alvo aleatório espalha a tabela para vários baldes.
+        crate::log::log!("dht", "bootstrap brought in {total} nodes");
+        // A lookup for a random target spreads the table across several buckets.
         if total > 0 {
             self.find_node(Id20::random()).await;
         }
         total
     }
 
-    /// Busca iterativa por peers de um info_hash.
+    /// Iterative lookup for peers of an info_hash.
     ///
-    /// Cada peer encontrado é despachado imediatamente pelo canal — o download
-    /// pode começar enquanto a busca ainda caminha pela rede.
+    /// Each peer found is dispatched immediately over the channel - the download
+    /// can start while the lookup is still walking the network.
     pub async fn get_peers(
         self: &Arc<Self>,
         info_hash: Id20,
         peers_tx: Option<mpsc::Sender<Vec<SocketAddr>>>,
     ) -> Vec<(NodeInfo, Vec<u8>)> {
-        let mut candidatos = Candidatos::new(info_hash);
-        candidatos.oferecer(self.routing.lock().unwrap().closest(&info_hash, K * 2));
-        let mut com_token: Vec<(NodeInfo, Vec<u8>)> = Vec::new();
+        let mut candidates = Candidates::new(info_hash);
+        candidates.offer(
+            self.routing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .closest(&info_hash, K * 2),
+        );
+        let mut with_token: Vec<(NodeInfo, Vec<u8>)> = Vec::new();
 
-        for _ in 0..MAX_RODADAS {
-            let lote = candidatos.proximos(ALPHA);
-            if lote.is_empty() {
+        for _ in 0..MAX_ROUNDS {
+            let batch = candidates.next_batch(ALPHA);
+            if batch.is_empty() {
                 break;
             }
 
-            let mut tarefas = JoinSet::new();
-            for no in lote {
+            let mut tasks = JoinSet::new();
+            for node in batch {
                 let this = Arc::clone(self);
-                tarefas.spawn(async move {
+                tasks.spawn(async move {
                     let r = this
-                        .query(no.addr, Query::GetPeers { id: this.node_id, info_hash })
+                        .query(
+                            node.addr,
+                            Query::GetPeers {
+                                id: this.node_id,
+                                info_hash,
+                            },
+                        )
                         .await;
-                    (no, r)
+                    (node, r)
                 });
             }
 
-            let mut achou_algo = false;
-            while let Some(Ok((no, resultado))) = tarefas.join_next().await {
-                match resultado {
+            let mut found_anything = false;
+            while let Some(Ok((node, result))) = tasks.join_next().await {
+                match result {
                     Ok(resp) => {
-                        candidatos.marcar_ok(no.id);
-                        achou_algo |= candidatos.oferecer(resp.nodes);
+                        candidates.mark_ok(node.id);
+                        found_anything |= candidates.offer(resp.nodes);
                         if let Some(token) = resp.token {
-                            com_token.push((no, token));
+                            with_token.push((node, token));
                         }
                         if !resp.values.is_empty() {
                             self.stats
@@ -217,40 +238,40 @@ impl Dht {
                             if let Some(tx) = &peers_tx
                                 && tx.send(resp.values).await.is_err()
                             {
-                                return com_token;
+                                return with_token;
                             }
                         }
                     }
-                    Err(_) => candidatos.marcar_falha(no.id),
+                    Err(_) => candidates.mark_failed(node.id),
                 }
             }
-            if !achou_algo && candidatos.esgotado() {
+            if !found_anything && candidates.is_exhausted() {
                 break;
             }
         }
 
         crate::log::log!(
             "dht",
-            "busca por {} terminou: {} nós com token, tabela com {} nós",
+            "lookup for {} finished: {} nodes with token, table has {} nodes",
             &info_hash.to_hex()[..8],
-            com_token.len(),
-            self.routing.lock().unwrap().len()
+            with_token.len(),
+            self.routing.lock().unwrap_or_else(|e| e.into_inner()).len()
         );
-        // Só os mais próximos importam para anunciar depois.
-        com_token.sort_unstable_by_key(|(no, _)| no.id.distance(&info_hash));
-        com_token.truncate(K);
-        com_token
+        // Only the closest ones matter for announcing afterwards.
+        with_token.sort_unstable_by_key(|(node, _)| node.id.distance(&info_hash));
+        with_token.truncate(K);
+        with_token
     }
 
-    /// Anuncia que temos este torrent, para outros nos encontrarem.
+    /// Announces that we have this torrent, so others can find us.
     pub async fn announce_peer(self: &Arc<Self>, info_hash: Id20, port: u16) -> usize {
-        let alvos = self.get_peers(info_hash, None).await;
-        let mut tarefas = JoinSet::new();
-        for (no, token) in alvos {
+        let targets = self.get_peers(info_hash, None).await;
+        let mut tasks = JoinSet::new();
+        for (node, token) in targets {
             let this = Arc::clone(self);
-            tarefas.spawn(async move {
+            tasks.spawn(async move {
                 this.query(
-                    no.addr,
+                    node.addr,
                     Query::AnnouncePeer {
                         id: this.node_id,
                         info_hash,
@@ -263,85 +284,108 @@ impl Dht {
                 .is_ok()
             });
         }
-        let mut aceitos = 0;
-        while let Some(r) = tarefas.join_next().await {
-            aceitos += usize::from(r.unwrap_or(false));
+        let mut accepted = 0;
+        while let Some(r) = tasks.join_next().await {
+            accepted += usize::from(r.unwrap_or(false));
         }
-        aceitos
+        accepted
     }
 
-    /// Busca por nós próximos de um alvo — usada no bootstrap e no refresh de
-    /// baldes; o resultado alimenta a tabela de roteamento.
+    /// Looks up nodes close to a target - used during bootstrap and bucket
+    /// refresh; the result feeds the routing table.
     async fn find_node(self: &Arc<Self>, target: Id20) {
-        let mut candidatos = Candidatos::new(target);
-        candidatos.oferecer(self.routing.lock().unwrap().closest(&target, K * 2));
+        let mut candidates = Candidates::new(target);
+        candidates.offer(
+            self.routing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .closest(&target, K * 2),
+        );
 
-        for _ in 0..MAX_RODADAS / 2 {
-            let lote = candidatos.proximos(ALPHA);
-            if lote.is_empty() {
+        for _ in 0..MAX_ROUNDS / 2 {
+            let batch = candidates.next_batch(ALPHA);
+            if batch.is_empty() {
                 break;
             }
-            let mut tarefas = JoinSet::new();
-            for no in lote {
+            let mut tasks = JoinSet::new();
+            for node in batch {
                 let this = Arc::clone(self);
-                tarefas.spawn(async move {
+                tasks.spawn(async move {
                     let r = this
-                        .query(no.addr, Query::FindNode { id: this.node_id, target })
+                        .query(
+                            node.addr,
+                            Query::FindNode {
+                                id: this.node_id,
+                                target,
+                            },
+                        )
                         .await;
-                    (no, r)
+                    (node, r)
                 });
             }
-            while let Some(Ok((no, resultado))) = tarefas.join_next().await {
-                match resultado {
+            while let Some(Ok((node, result))) = tasks.join_next().await {
+                match result {
                     Ok(resp) => {
-                        candidatos.marcar_ok(no.id);
-                        candidatos.oferecer(resp.nodes);
+                        candidates.mark_ok(node.id);
+                        candidates.offer(resp.nodes);
                     }
-                    Err(_) => candidatos.marcar_falha(no.id),
+                    Err(_) => candidates.mark_failed(node.id),
                 }
             }
         }
-        for no in candidatos.vistos() {
-            self.routing.lock().unwrap().add(no);
+        for node in candidates.responded() {
+            self.routing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .add(node);
         }
     }
 
-    /// Envia uma consulta e espera a resposta.
+    /// Sends a query and waits for the response.
     async fn query(&self, addr: SocketAddr, query: Query) -> Result<Response, String> {
         let tid = {
-            let mut n = self.next_tid.lock().unwrap();
+            let mut n = self.next_tid.lock().unwrap_or_else(|e| e.into_inner());
             *n = n.wrapping_add(1);
             *n
         };
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(tid, tx);
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tid, tx);
 
         let msg = Message::Query {
             transaction: tid.to_be_bytes().to_vec(),
             query,
         };
-        let enviado = self.socket.send_to(&msg.encode(), addr).await;
+        let sent = self.socket.send_to(&msg.encode(), addr).await;
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
 
-        if let Err(e) = enviado {
-            self.pending.lock().unwrap().remove(&tid);
-            return Err(format!("envio falhou: {e}"));
+        if let Err(e) = sent {
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&tid);
+            return Err(format!("send failed: {e}"));
         }
 
-        let resultado = match tokio::time::timeout(QUERY_TIMEOUT, rx).await {
+        let result = match tokio::time::timeout(QUERY_TIMEOUT, rx).await {
             Ok(Ok(r)) => r,
-            Ok(Err(_)) => Err("resposta descartada".to_string()),
-            Err(_) => Err("sem resposta".to_string()),
+            Ok(Err(_)) => Err("response dropped".to_string()),
+            Err(_) => Err("no response".to_string()),
         };
-        // Em caso de timeout a entrada ainda está lá; sem isso o mapa cresceria
-        // para sempre em uma rede com muitos nós mortos.
-        self.pending.lock().unwrap().remove(&tid);
-        resultado
+        // On timeout the entry is still there; without this the map would grow
+        // forever in a network with many dead nodes.
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&tid);
+        result
     }
 
-    /// Token que prova que o nó realmente está no IP que diz estar.
-    fn make_token(&self, addr: &SocketAddr, indice: usize) -> Vec<u8> {
-        let secret = self.secrets.lock().unwrap()[indice];
+    /// Token that proves the node really is at the IP it claims to be.
+    fn make_token(&self, addr: &SocketAddr, index: usize) -> Vec<u8> {
+        let secret = self.secrets.lock().unwrap_or_else(|e| e.into_inner())[index];
         let mut hasher = Sha1::new();
         hasher.update(secret);
         match addr.ip() {
@@ -351,30 +395,29 @@ impl Dht {
         hasher.finalize()[..8].to_vec()
     }
 
-    /// Aceita o segredo atual e o anterior: um token emitido pouco antes da
-    /// rotação continuaria válido para quem o recebeu.
+    /// Accepts the current secret and the previous one: a token issued shortly
+    /// before the rotation would still be valid for whoever received it.
     fn check_token(&self, addr: &SocketAddr, token: &[u8]) -> bool {
         (0..2).any(|i| self.make_token(addr, i) == token)
     }
 
     fn store_peer(&self, info_hash: Id20, addr: SocketAddr) {
-        let mut store = self.peer_store.lock().unwrap();
-        let lista = store.entry(info_hash).or_default();
-        lista.retain(|(a, _)| *a != addr);
-        lista.push((addr, Instant::now()));
-        // Um info_hash popular não pode virar um vazamento de memória.
-        if lista.len() > 128 {
-            lista.remove(0);
+        let mut store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
+        let list = store.entry(info_hash).or_default();
+        list.retain(|(a, _)| *a != addr);
+        list.push((addr, Instant::now()));
+        // A popular info_hash must not turn into a memory leak.
+        if list.len() > 128 {
+            list.remove(0);
         }
     }
 
     fn lookup_peers(&self, info_hash: Id20) -> Vec<SocketAddr> {
-        let store = self.peer_store.lock().unwrap();
+        let store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
         store
             .get(&info_hash)
-            .map(|lista| {
-                lista
-                    .iter()
+            .map(|list| {
+                list.iter()
                     .filter(|(_, t)| t.elapsed() < PEER_TTL)
                     .map(|(a, _)| *a)
                     .take(50)
@@ -383,29 +426,36 @@ impl Dht {
             .unwrap_or_default()
     }
 
-    /// Monta a resposta para uma consulta de outro nó.
+    /// Builds the response to a query from another node.
     fn answer(&self, from: SocketAddr, query: &Query) -> Message {
-        let responder = |response| Message::Response {
+        let respond = |response| Message::Response {
             transaction: Vec::new(),
             response,
         };
         match query {
-            Query::Ping { .. } => responder(Response {
+            Query::Ping { .. } => respond(Response {
                 id: self.node_id,
                 ..Default::default()
             }),
-            Query::FindNode { target, .. } => responder(Response {
+            Query::FindNode { target, .. } => respond(Response {
                 id: self.node_id,
-                nodes: self.routing.lock().unwrap().closest(target, K),
+                nodes: self
+                    .routing
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .closest(target, K),
                 ..Default::default()
             }),
             Query::GetPeers { info_hash, .. } => {
                 let peers = self.lookup_peers(*info_hash);
-                responder(Response {
+                respond(Response {
                     id: self.node_id,
-                    // Quem tem peers manda peers; quem não tem manda o caminho.
+                    // Whoever has peers sends peers; whoever does not sends the path.
                     nodes: if peers.is_empty() {
-                        self.routing.lock().unwrap().closest(info_hash, K)
+                        self.routing
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .closest(info_hash, K)
                     } else {
                         Vec::new()
                     },
@@ -424,14 +474,14 @@ impl Dht {
                     return Message::Error {
                         transaction: Vec::new(),
                         code: 203,
-                        message: "token inválido".to_string(),
+                        message: "invalid token".to_string(),
                     };
                 }
-                let porta = if *implied_port { from.port() } else { *port };
-                if porta != 0 {
-                    self.store_peer(*info_hash, SocketAddr::new(from.ip(), porta));
+                let port = if *implied_port { from.port() } else { *port };
+                if port != 0 {
+                    self.store_peer(*info_hash, SocketAddr::new(from.ip(), port));
                 }
-                responder(Response {
+                respond(Response {
                     id: self.node_id,
                     ..Default::default()
                 })
@@ -440,75 +490,75 @@ impl Dht {
     }
 }
 
-/// Conjunto de nós de uma busca, ordenado por distância ao alvo.
-struct Candidatos {
-    alvo: Id20,
-    fila: Vec<NodeInfo>,
-    consultados: HashSet<Id20>,
-    vivos: HashSet<Id20>,
-    vistos: HashSet<Id20>,
+/// Set of nodes in a lookup, sorted by distance to the target.
+struct Candidates {
+    target: Id20,
+    queue: Vec<NodeInfo>,
+    queried: HashSet<Id20>,
+    alive: HashSet<Id20>,
+    seen: HashSet<Id20>,
 }
 
-impl Candidatos {
-    fn new(alvo: Id20) -> Candidatos {
-        Candidatos {
-            alvo,
-            fila: Vec::new(),
-            consultados: HashSet::new(),
-            vivos: HashSet::new(),
-            vistos: HashSet::new(),
+impl Candidates {
+    fn new(target: Id20) -> Candidates {
+        Candidates {
+            target,
+            queue: Vec::new(),
+            queried: HashSet::new(),
+            alive: HashSet::new(),
+            seen: HashSet::new(),
         }
     }
 
-    /// Adiciona nós ainda desconhecidos; devolve `true` se algum era novo.
-    fn oferecer(&mut self, nodes: impl IntoIterator<Item = NodeInfo>) -> bool {
-        let mut novidade = false;
-        for no in nodes {
-            if self.vistos.insert(no.id) {
-                self.fila.push(no);
-                novidade = true;
+    /// Adds nodes not yet known; returns `true` if any was new.
+    fn offer(&mut self, nodes: impl IntoIterator<Item = NodeInfo>) -> bool {
+        let mut any_new = false;
+        for node in nodes {
+            if self.seen.insert(node.id) {
+                self.queue.push(node);
+                any_new = true;
             }
         }
-        if novidade {
-            let alvo = self.alvo;
-            self.fila.sort_unstable_by_key(|n| n.id.distance(&alvo));
-            // A busca só precisa manter o horizonte próximo do alvo.
-            self.fila.truncate(64);
+        if any_new {
+            let target = self.target;
+            self.queue.sort_unstable_by_key(|n| n.id.distance(&target));
+            // The lookup only needs to keep the horizon close to the target.
+            self.queue.truncate(64);
         }
-        novidade
+        any_new
     }
 
-    fn proximos(&mut self, n: usize) -> Vec<NodeInfo> {
-        let escolhidos: Vec<NodeInfo> = self
-            .fila
+    fn next_batch(&mut self, n: usize) -> Vec<NodeInfo> {
+        let chosen: Vec<NodeInfo> = self
+            .queue
             .iter()
-            .filter(|no| !self.consultados.contains(&no.id))
+            .filter(|node| !self.queried.contains(&node.id))
             .take(n)
             .copied()
             .collect();
-        for no in &escolhidos {
-            self.consultados.insert(no.id);
+        for node in &chosen {
+            self.queried.insert(node.id);
         }
-        escolhidos
+        chosen
     }
 
-    fn marcar_ok(&mut self, id: Id20) {
-        self.vivos.insert(id);
+    fn mark_ok(&mut self, id: Id20) {
+        self.alive.insert(id);
     }
 
-    fn marcar_falha(&mut self, id: Id20) {
-        self.fila.retain(|n| n.id != id);
+    fn mark_failed(&mut self, id: Id20) {
+        self.queue.retain(|n| n.id != id);
     }
 
-    fn esgotado(&self) -> bool {
-        self.fila.iter().all(|n| self.consultados.contains(&n.id))
+    fn is_exhausted(&self) -> bool {
+        self.queue.iter().all(|n| self.queried.contains(&n.id))
     }
 
-    /// Nós que responderam — os únicos que merecem entrar na tabela.
-    fn vistos(&self) -> Vec<NodeInfo> {
-        self.fila
+    /// Nodes that responded - the only ones that deserve to enter the table.
+    fn responded(&self) -> Vec<NodeInfo> {
+        self.queue
             .iter()
-            .filter(|n| self.vivos.contains(&n.id))
+            .filter(|n| self.alive.contains(&n.id))
             .copied()
             .collect()
     }
@@ -519,8 +569,8 @@ async fn recv_loop(dht: Arc<Dht>) {
     loop {
         let (n, from) = match dht.socket.recv_from(&mut buf).await {
             Ok(r) => r,
-            // ICMP port unreachable vira erro de recv no Windows; ignorar e
-            // seguir, senão o DHT inteiro morre por causa de um nó offline.
+            // ICMP port unreachable becomes a recv error on Windows; ignore it and
+            // carry on, otherwise the whole DHT dies because of one offline node.
             Err(_) => continue,
         };
 
@@ -530,24 +580,27 @@ async fn recv_loop(dht: Arc<Dht>) {
         match msg {
             Message::Query { transaction, query } => {
                 dht.stats.queries_received.fetch_add(1, Ordering::Relaxed);
-                // Quem fala conosco entra na tabela: é um nó comprovadamente vivo.
+                // Whoever talks to us enters the table: it is a provably live node.
                 if let Some(id) = query_id(&query) {
-                    dht.routing.lock().unwrap().add(NodeInfo { id, addr: from });
+                    dht.routing
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .add(NodeInfo { id, addr: from });
                 }
-                let mut resposta = dht.answer(from, &query);
-                match &mut resposta {
+                let mut response = dht.answer(from, &query);
+                match &mut response {
                     Message::Response { transaction: t, .. }
                     | Message::Error { transaction: t, .. } => *t = transaction,
                     Message::Query { .. } => unreachable!(),
                 }
-                let _ = dht.socket.send_to(&resposta.encode(), from).await;
+                let _ = dht.socket.send_to(&response.encode(), from).await;
             }
             Message::Response {
                 transaction,
                 response,
             } => {
                 {
-                    let mut routing = dht.routing.lock().unwrap();
+                    let mut routing = dht.routing.lock().unwrap_or_else(|e| e.into_inner());
                     routing.add(NodeInfo {
                         id: response.id,
                         addr: from,
@@ -564,7 +617,7 @@ async fn recv_loop(dht: Arc<Dht>) {
                 message,
             } => {
                 if let Some(tx) = take_pending(&dht, &transaction) {
-                    let _ = tx.send(Err(format!("erro {code}: {message}")));
+                    let _ = tx.send(Err(format!("error {code}: {message}")));
                 }
             }
         }
@@ -576,7 +629,10 @@ fn take_pending(
     transaction: &[u8],
 ) -> Option<oneshot::Sender<Result<Response, String>>> {
     let tid = u16::from_be_bytes(transaction.get(..2)?.try_into().ok()?);
-    dht.pending.lock().unwrap().remove(&tid)
+    dht.pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&tid)
 }
 
 fn query_id(query: &Query) -> Option<Id20> {
@@ -590,45 +646,63 @@ fn query_id(query: &Query) -> Option<Id20> {
 
 async fn maintenance_loop(dht: Arc<Dht>) {
     let mut tick = tokio::time::interval(Duration::from_secs(60));
-    let mut ciclos = 0u32;
+    let mut cycles = 0u32;
     loop {
         tick.tick().await;
-        ciclos += 1;
+        cycles += 1;
 
-        // Rotaciona o segredo dos tokens a cada 5 minutos.
-        if ciclos.is_multiple_of(5) {
-            let mut secrets = dht.secrets.lock().unwrap();
+        // Rotates the token secret every 5 minutes.
+        if cycles.is_multiple_of(5) {
+            let mut secrets = dht.secrets.lock().unwrap_or_else(|e| e.into_inner());
             secrets[1] = secrets[0];
             secrets[0] = rand::rng().random();
         }
 
-        // Descarta peers vencidos.
+        // Discards expired peers.
         {
-            let mut store = dht.peer_store.lock().unwrap();
-            for lista in store.values_mut() {
-                lista.retain(|(_, t)| t.elapsed() < PEER_TTL);
+            let mut store = dht.peer_store.lock().unwrap_or_else(|e| e.into_inner());
+            for list in store.values_mut() {
+                list.retain(|(_, t)| t.elapsed() < PEER_TTL);
             }
-            store.retain(|_, lista| !lista.is_empty());
+            store.retain(|_, list| !list.is_empty());
         }
 
-        // Confere os nós duvidosos antes de perdê-los.
-        let duvidosos = dht.routing.lock().unwrap().questionable();
-        for no in duvidosos.into_iter().take(ALPHA) {
+        // Checks questionable nodes before losing them.
+        let questionable = dht
+            .routing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .questionable();
+        for node in questionable.into_iter().take(ALPHA) {
             let this = Arc::clone(&dht);
             tokio::spawn(async move {
-                if this.query(no.addr, Query::Ping { id: this.node_id }).await.is_err() {
-                    this.routing.lock().unwrap().mark_failed(&no.id);
+                if this
+                    .query(node.addr, Query::Ping { id: this.node_id })
+                    .await
+                    .is_err()
+                {
+                    this.routing
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .mark_failed(&node.id);
                 }
             });
         }
 
-        // Reanima baldes parados.
-        let alvos = dht.routing.lock().unwrap().refresh_targets();
-        for alvo in alvos.into_iter().take(2) {
+        // Revives stale buckets.
+        let targets = dht
+            .routing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .refresh_targets();
+        for target in targets.into_iter().take(2) {
             let this = Arc::clone(&dht);
             tokio::spawn(async move {
-                this.find_node(alvo).await;
-                this.routing.lock().unwrap().mark_bucket_refreshed(&alvo);
+                this.find_node(target).await;
+                this.routing
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .mark_bucket_refreshed(&target);
             });
         }
     }
@@ -638,24 +712,24 @@ async fn maintenance_loop(dht: Arc<Dht>) {
 mod tests {
     use super::*;
 
-    async fn dht_local() -> Arc<Dht> {
-        Dht::bind(0).await.expect("bind em porta efêmera")
+    async fn local_dht() -> Arc<Dht> {
+        Dht::bind(0).await.expect("bind on an ephemeral port")
     }
 
     #[tokio::test]
-    async fn responde_ping_e_find_node() {
-        let a = dht_local().await;
-        let b = dht_local().await;
+    async fn answers_ping_and_find_node() {
+        let a = local_dht().await;
+        let b = local_dht().await;
         let addr_b = SocketAddr::from(([127, 0, 0, 1], b.local_port()));
 
         let resp = a
             .query(addr_b, Query::Ping { id: a.node_id() })
             .await
-            .expect("ping deve responder");
+            .expect("ping must be answered");
         assert_eq!(resp.id, b.node_id());
 
-        // O ping fez `b` conhecer `a`.
-        assert!(b.stats().nodes >= 1, "quem fala conosco entra na tabela");
+        // The ping made `b` learn about `a`.
+        assert!(b.stats().nodes >= 1, "whoever talks to us enters the table");
 
         let resp = a
             .query(
@@ -671,13 +745,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_peers_e_announce_com_token() {
-        let a = dht_local().await;
-        let b = dht_local().await;
+    async fn get_peers_and_announce_with_token() {
+        let a = local_dht().await;
+        let b = local_dht().await;
         let addr_b = SocketAddr::from(([127, 0, 0, 1], b.local_port()));
         let info_hash = Id20::random();
 
-        // Sem ninguém anunciado, vem token e nós (nenhum, aqui) mas sem peers.
+        // With nobody announced, we get a token and nodes (none, here) but no peers.
         let resp = a
             .query(
                 addr_b,
@@ -688,7 +762,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let token = resp.token.clone().expect("get_peers devolve token");
+        let token = resp.token.clone().expect("get_peers returns a token");
         assert!(resp.values.is_empty());
 
         let ok = a
@@ -703,9 +777,9 @@ mod tests {
                 },
             )
             .await;
-        assert!(ok.is_ok(), "announce com token válido é aceito");
+        assert!(ok.is_ok(), "announce with a valid token is accepted");
 
-        // Agora `b` conhece um peer para esse info_hash.
+        // Now `b` knows a peer for this info_hash.
         let resp = a
             .query(
                 addr_b,
@@ -721,64 +795,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recusa_announce_com_token_falso() {
-        let a = dht_local().await;
-        let b = dht_local().await;
+    async fn rejects_announce_with_bad_token() {
+        let a = local_dht().await;
+        let b = local_dht().await;
         let addr_b = SocketAddr::from(([127, 0, 0, 1], b.local_port()));
 
-        let erro = a
+        let error = a
             .query(
                 addr_b,
                 Query::AnnouncePeer {
                     id: a.node_id(),
                     info_hash: Id20::random(),
                     port: 6881,
-                    token: b"tokenfalso".to_vec(),
+                    token: b"faketoken".to_vec(),
                     implied_port: false,
                 },
             )
             .await
             .unwrap_err();
-        assert!(erro.contains("203"), "erro veio: {erro}");
+        assert!(error.contains("203"), "error came back: {error}");
     }
 
     #[tokio::test]
-    async fn consulta_sem_resposta_expira_e_limpa() {
-        let a = dht_local().await;
-        // Porta onde ninguém escuta.
-        let morto = SocketAddr::from(([127, 0, 0, 1], 1));
+    async fn unanswered_query_times_out_and_cleans_up() {
+        let a = local_dht().await;
+        // Port where nobody is listening.
+        let dead = SocketAddr::from(([127, 0, 0, 1], 1));
         let r = tokio::time::timeout(
             QUERY_TIMEOUT + Duration::from_secs(2),
-            a.query(morto, Query::Ping { id: a.node_id() }),
+            a.query(dead, Query::Ping { id: a.node_id() }),
         )
         .await
-        .expect("a consulta precisa desistir sozinha");
+        .expect("the query must give up on its own");
         assert!(r.is_err());
-        assert!(a.pending.lock().unwrap().is_empty(), "sem vazamento");
+        assert!(
+            a.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "no leak"
+        );
     }
 
     #[test]
-    fn candidatos_ordenam_e_nao_repetem() {
-        let alvo = Id20([0xff; 20]);
-        let mut c = Candidatos::new(alvo);
-        let perto = NodeInfo {
+    fn candidates_sort_and_do_not_repeat() {
+        let target = Id20([0xff; 20]);
+        let mut c = Candidates::new(target);
+        let near = NodeInfo {
             id: Id20([0xfe; 20]),
             addr: "1.1.1.1:1".parse().unwrap(),
         };
-        let longe = NodeInfo {
+        let far = NodeInfo {
             id: Id20([0x00; 20]),
             addr: "2.2.2.2:2".parse().unwrap(),
         };
 
-        assert!(c.oferecer([longe, perto]));
-        assert!(!c.oferecer([perto]), "nó repetido não conta como novidade");
+        assert!(c.offer([far, near]));
+        assert!(!c.offer([near]), "a repeated node does not count as new");
 
-        let lote = c.proximos(1);
-        assert_eq!(lote[0].id, perto.id, "o mais próximo do alvo vai primeiro");
-        assert_eq!(c.proximos(1)[0].id, longe.id, "não repete consulta");
-        assert!(c.esgotado());
+        let batch = c.next_batch(1);
+        assert_eq!(batch[0].id, near.id, "the closest to the target goes first");
+        assert_eq!(c.next_batch(1)[0].id, far.id, "does not repeat a query");
+        assert!(c.is_exhausted());
 
-        c.marcar_ok(perto.id);
-        assert_eq!(c.vistos().len(), 1, "só quem respondeu conta");
+        c.mark_ok(near.id);
+        assert_eq!(c.responded().len(), 1, "only whoever responded counts");
     }
 }

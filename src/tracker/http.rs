@@ -1,4 +1,4 @@
-//! Announce por HTTP/HTTPS (BEP-3, com peers compactos do BEP-23).
+//! HTTP/HTTPS announce (BEP-3, with compact peers from BEP-23).
 
 use super::{AnnounceRequest, AnnounceResponse, Event};
 use crate::bencode;
@@ -8,8 +8,8 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_encode};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-/// `info_hash` e `peer_id` são bytes crus, não texto: tudo que não for
-/// *unreserved* (RFC 3986) precisa ir percent-encoded.
+/// `info_hash` and `peer_id` are raw bytes, not text: everything that is not
+/// *unreserved* (RFC 3986) must be percent-encoded.
 const RAW: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'_')
@@ -30,9 +30,9 @@ pub fn build_url(base: &str, req: &AnnounceRequest) -> String {
         "&port={}&uploaded={}&downloaded={}&left={}&compact=1&no_peer_id=1&numwant={}&key={:08x}",
         req.port, req.uploaded, req.downloaded, req.left, req.num_want, req.key
     ));
-    if let Some(evento) = req.event.as_str() {
+    if let Some(event) = req.event.as_str() {
         url.push_str("&event=");
-        url.push_str(evento);
+        url.push_str(event);
     }
     if let Some(id) = &req.tracker_id {
         url.push_str("&trackerid=");
@@ -47,32 +47,32 @@ pub async fn announce(
     req: &AnnounceRequest,
 ) -> Result<AnnounceResponse> {
     let url = build_url(base, req);
-    let resposta = client
+    let response = client
         .get(&url)
         .send()
         .await
-        .context("falha ao contatar o tracker")?;
-    let status = resposta.status();
-    let corpo = resposta.bytes().await.context("resposta interrompida")?;
+        .context("failed to contact the tracker")?;
+    let status = response.status();
+    let body = response.bytes().await.context("interrupted response")?;
     if !status.is_success() {
-        bail!("tracker respondeu HTTP {}", status.as_u16());
+        bail!("tracker responded with HTTP {}", status.as_u16());
     }
-    parse_response(&corpo)
+    parse_response(&body)
 }
 
-pub fn parse_response(corpo: &[u8]) -> Result<AnnounceResponse> {
-    let root = bencode::decode(corpo)
-        .context("resposta do tracker não é bencode válido")?
+pub fn parse_response(body: &[u8]) -> Result<AnnounceResponse> {
+    let root = bencode::decode(body)
+        .context("tracker response is not valid bencode")?
         .value;
 
-    if let Some(motivo) = root.str_at("failure reason") {
-        bail!("tracker recusou: {motivo}");
+    if let Some(reason) = root.str_at("failure reason") {
+        bail!("tracker rejected: {reason}");
     }
 
     let mut peers = match root.get("peers") {
-        // Formato compacto (BEP-23): 6 bytes por peer.
+        // Compact format (BEP-23): 6 bytes per peer.
         Some(bencode::Value::Bytes(b)) => compact::parse_v4(b),
-        // Formato antigo: lista de dicionários.
+        // Legacy format: list of dictionaries.
         Some(bencode::Value::List(list)) => list
             .iter()
             .filter_map(|p| {
@@ -88,11 +88,11 @@ pub fn parse_response(corpo: &[u8]) -> Result<AnnounceResponse> {
         peers.extend(compact::parse_v6(b));
     }
 
-    let segundos = |chave: &str| root.int_at(chave).filter(|v| *v > 0).map(|v| v as u64);
+    let seconds = |key: &str| root.int_at(key).filter(|v| *v > 0).map(|v| v as u64);
     Ok(AnnounceResponse {
-        // Tracker sem `interval` é raro mas acontece; 30 min é o padrão de fato.
-        interval: Duration::from_secs(segundos("interval").unwrap_or(1800).clamp(60, 3 * 3600)),
-        min_interval: segundos("min interval").map(Duration::from_secs),
+        // A tracker without `interval` is rare but does happen; 30 min is the de facto default.
+        interval: Duration::from_secs(seconds("interval").unwrap_or(1800).clamp(60, 3 * 3600)),
+        min_interval: seconds("min interval").map(Duration::from_secs),
         peers,
         seeders: root.int_at("complete").unwrap_or(0).max(0) as u32,
         leechers: root.int_at("incomplete").unwrap_or(0).max(0) as u32,
@@ -118,7 +118,7 @@ mod tests {
     use crate::bencode::Value;
     use crate::id::Id20;
 
-    fn pedido() -> AnnounceRequest {
+    fn request() -> AnnounceRequest {
         AnnounceRequest {
             info_hash: Id20([0x12; 20]),
             peer_id: Id20(*b"-TR0001-abcdefghijkl"),
@@ -134,28 +134,31 @@ mod tests {
     }
 
     #[test]
-    fn monta_query_com_bytes_escapados() {
-        let url = build_url("http://t.exemplo/announce", &pedido());
-        assert!(url.starts_with("http://t.exemplo/announce?info_hash=%12%12"));
-        assert!(url.contains("&peer_id=-TR0001-abcdefghijkl"), "unreserved passa cru");
+    fn builds_query_with_escaped_bytes() {
+        let url = build_url("http://t.example/announce", &request());
+        assert!(url.starts_with("http://t.example/announce?info_hash=%12%12"));
+        assert!(
+            url.contains("&peer_id=-TR0001-abcdefghijkl"),
+            "unreserved passes through raw"
+        );
         assert!(url.contains("&port=6881&uploaded=10&downloaded=20&left=30"));
         assert!(url.contains("&compact=1"));
         assert!(url.contains("&event=started"));
         assert!(url.contains("&key=deadbeef"));
 
-        // Um announce que já tem query recebe `&` em vez de `?`.
-        let com_query = build_url("http://t.exemplo/ann?x=1", &pedido());
-        assert!(com_query.contains("?x=1&info_hash="));
+        // An announce that already has a query gets `&` instead of `?`.
+        let with_query = build_url("http://t.example/ann?x=1", &request());
+        assert!(with_query.contains("?x=1&info_hash="));
 
-        // O announce periódico não manda `event`.
-        let mut periodico = pedido();
-        periodico.event = Event::Periodic;
-        assert!(!build_url("http://t/a", &periodico).contains("event="));
+        // The periodic announce does not send `event`.
+        let mut periodic = request();
+        periodic.event = Event::Periodic;
+        assert!(!build_url("http://t/a", &periodic).contains("event="));
     }
 
     #[test]
-    fn le_resposta_compacta() {
-        let corpo = bencode::encode(&Value::dict([
+    fn parses_compact_response() {
+        let body = bencode::encode(&Value::dict([
             ("interval", Value::Int(900)),
             ("min interval", Value::Int(300)),
             ("complete", Value::Int(5)),
@@ -165,7 +168,7 @@ mod tests {
                 Value::Bytes(vec![192, 168, 0, 1, 0x1a, 0xe1, 10, 1, 2, 3, 0x1a, 0xe2]),
             ),
         ]));
-        let r = parse_response(&corpo).unwrap();
+        let r = parse_response(&body).unwrap();
         assert_eq!(r.interval, Duration::from_secs(900));
         assert_eq!(r.min_interval, Some(Duration::from_secs(300)));
         assert_eq!(r.seeders, 5);
@@ -175,38 +178,38 @@ mod tests {
     }
 
     #[test]
-    fn le_resposta_em_lista_de_dicionarios() {
-        let peer = |ip: &str, porta: i64| {
-            Value::dict([("ip", Value::bytes(ip)), ("port", Value::Int(porta))])
+    fn parses_dictionary_list_response() {
+        let peer = |ip: &str, port: i64| {
+            Value::dict([("ip", Value::bytes(ip)), ("port", Value::Int(port))])
         };
-        let corpo = bencode::encode(&Value::dict([
+        let body = bencode::encode(&Value::dict([
             ("interval", Value::Int(600)),
             (
                 "peers",
                 Value::List(vec![peer("1.2.3.4", 51413), peer("5.6.7.8", 0)]),
             ),
         ]));
-        let r = parse_response(&corpo).unwrap();
-        assert_eq!(r.peers.len(), 1, "porta 0 é descartada");
+        let r = parse_response(&body).unwrap();
+        assert_eq!(r.peers.len(), 1, "port 0 is discarded");
         assert_eq!(r.peers[0].to_string(), "1.2.3.4:51413");
     }
 
     #[test]
-    fn propaga_falha_do_tracker() {
-        let corpo = bencode::encode(&Value::dict([(
+    fn propagates_tracker_failure() {
+        let body = bencode::encode(&Value::dict([(
             "failure reason",
-            Value::bytes("torrent não registrado"),
+            Value::bytes("torrent not registered"),
         )]));
-        let erro = parse_response(&corpo).unwrap_err().to_string();
-        assert!(erro.contains("torrent não registrado"));
-        assert!(parse_response(b"nao-e-bencode").is_err());
+        let error = parse_response(&body).unwrap_err().to_string();
+        assert!(error.contains("torrent not registered"));
+        assert!(parse_response(b"not-bencode").is_err());
     }
 
     #[test]
-    fn intervalo_absurdo_e_limitado() {
-        let corpo = bencode::encode(&Value::dict([("interval", Value::Int(999_999))]));
-        assert_eq!(parse_response(&corpo).unwrap().interval.as_secs(), 3 * 3600);
-        let corpo = bencode::encode(&Value::dict([("interval", Value::Int(1))]));
-        assert_eq!(parse_response(&corpo).unwrap().interval.as_secs(), 60);
+    fn absurd_interval_is_clamped() {
+        let body = bencode::encode(&Value::dict([("interval", Value::Int(999_999))]));
+        assert_eq!(parse_response(&body).unwrap().interval.as_secs(), 3 * 3600);
+        let body = bencode::encode(&Value::dict([("interval", Value::Int(1))]));
+        assert_eq!(parse_response(&body).unwrap().interval.as_secs(), 60);
     }
 }

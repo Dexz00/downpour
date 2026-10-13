@@ -1,22 +1,22 @@
-//! Medição de taxa de transferência.
+//! Transfer rate measurement.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Resolução dos baldes da janela deslizante.
-const BALDE: Duration = Duration::from_millis(500);
-/// Quantos baldes a janela guarda (8 segundos).
-const BALDES: usize = 16;
+/// Resolution of the sliding window buckets.
+const BUCKET: Duration = Duration::from_millis(500);
+/// How many buckets the window keeps (8 seconds).
+const BUCKETS: usize = 16;
 
-/// Taxa em bytes por segundo, medida numa janela deslizante.
+/// Rate in bytes per second, measured over a sliding window.
 ///
-/// Uma média sobre o download inteiro esconde exatamente o que interessa: se a
-/// velocidade caiu *agora*. A janela curta responde rápido sem tremer a cada
-/// bloco recebido.
+/// An average over the entire download hides exactly what matters: whether the
+/// speed dropped *right now*. The short window responds quickly without
+/// jittering with every received block.
 pub struct RateMeter {
-    baldes: [u64; BALDES],
-    atual: usize,
-    virada: Instant,
+    buckets: [u64; BUCKETS],
+    current: usize,
+    rollover: Instant,
     total: u64,
 }
 
@@ -29,24 +29,24 @@ impl Default for RateMeter {
 impl RateMeter {
     pub fn new() -> RateMeter {
         RateMeter {
-            baldes: [0; BALDES],
-            atual: 0,
-            virada: Instant::now(),
+            buckets: [0; BUCKETS],
+            current: 0,
+            rollover: Instant::now(),
             total: 0,
         }
     }
 
     pub fn add(&mut self, bytes: u64) {
         self.rotate();
-        self.baldes[self.atual] += bytes;
+        self.buckets[self.current] += bytes;
         self.total += bytes;
     }
 
-    /// Bytes por segundo na janela recente.
+    /// Bytes per second over the recent window.
     pub fn rate(&mut self) -> f64 {
         self.rotate();
-        let soma: u64 = self.baldes.iter().sum();
-        soma as f64 / (BALDES as f64 * BALDE.as_secs_f64())
+        let sum: u64 = self.buckets.iter().sum();
+        sum as f64 / (BUCKETS as f64 * BUCKET.as_secs_f64())
     }
 
     pub fn total(&self) -> u64 {
@@ -54,84 +54,83 @@ impl RateMeter {
     }
 
     fn rotate(&mut self) {
-        let decorrido = self.virada.elapsed();
-        if decorrido < BALDE {
+        let elapsed = self.rollover.elapsed();
+        if elapsed < BUCKET {
             return;
         }
-        let passos = (decorrido.as_nanos() / BALDE.as_nanos()) as usize;
-        if passos >= BALDES {
-            self.baldes = [0; BALDES];
-            self.atual = 0;
+        let steps = (elapsed.as_nanos() / BUCKET.as_nanos()) as usize;
+        if steps >= BUCKETS {
+            self.buckets = [0; BUCKETS];
+            self.current = 0;
         } else {
-            for _ in 0..passos {
-                self.atual = (self.atual + 1) % BALDES;
-                self.baldes[self.atual] = 0;
+            for _ in 0..steps {
+                self.current = (self.current + 1) % BUCKETS;
+                self.buckets[self.current] = 0;
             }
         }
-        self.virada += BALDE * passos as u32;
+        self.rollover += BUCKET * steps as u32;
     }
 }
 
-/// Série temporal curta, para desenhar o gráfico de velocidade.
+/// Short time series, for drawing the speed graph.
 pub struct History {
-    amostras: VecDeque<f64>,
-    capacidade: usize,
+    samples: VecDeque<f64>,
+    capacity: usize,
 }
 
 impl History {
-    pub fn new(capacidade: usize) -> History {
+    pub fn new(capacity: usize) -> History {
         History {
-            amostras: VecDeque::with_capacity(capacidade),
-            capacidade,
+            samples: VecDeque::with_capacity(capacity),
+            capacity,
         }
     }
 
-    pub fn push(&mut self, valor: f64) {
-        if self.amostras.len() == self.capacidade {
-            self.amostras.pop_front();
+    pub fn push(&mut self, value: f64) {
+        if self.samples.len() == self.capacity {
+            self.samples.pop_front();
         }
-        self.amostras.push_back(valor);
+        self.samples.push_back(value);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = f64> + '_ {
-        self.amostras.iter().copied()
+        self.samples.iter().copied()
     }
-
 }
 
-/// Formata bytes em unidade legível: `1.4 MiB`.
+/// Formats bytes in a readable unit: `1.4 MiB`.
 pub fn bytes(n: u64) -> String {
-    const UNIDADES: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-    let mut valor = n as f64;
-    let mut unidade = 0;
-    while valor >= 1024.0 && unidade + 1 < UNIDADES.len() {
-        valor /= 1024.0;
-        unidade += 1;
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
     }
-    if unidade == 0 {
+    if unit == 0 {
         format!("{n} B")
-    } else if valor < 10.0 {
-        format!("{valor:.2} {}", UNIDADES[unidade])
+    } else if value < 10.0 {
+        format!("{value:.2} {}", UNITS[unit])
     } else {
-        format!("{valor:.1} {}", UNIDADES[unidade])
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
-/// Formata uma taxa: `2.3 MiB/s`.
-pub fn rate(bytes_por_segundo: f64) -> String {
-    if bytes_por_segundo < 1.0 {
+/// Formats a rate: `2.3 MiB/s`.
+pub fn rate(bytes_per_second: f64) -> String {
+    if bytes_per_second < 1.0 {
         return "—".to_string();
     }
-    format!("{}/s", bytes(bytes_por_segundo as u64))
+    format!("{}/s", bytes(bytes_per_second as u64))
 }
 
-/// Formata uma duração como tempo restante: `2h 14m`.
-pub fn eta(segundos: Option<u64>) -> String {
-    let Some(s) = segundos else {
+/// Formats a duration as remaining time: `2h 14m`.
+pub fn eta(seconds: Option<u64>) -> String {
+    let Some(s) = seconds else {
         return "∞".to_string();
     };
     match s {
-        0 => "agora".to_string(),
+        0 => "now".to_string(),
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m {}s", s / 60, s % 60),
         s if s < 86400 => format!("{}h {}m", s / 3600, (s % 3600) / 60),
@@ -145,11 +144,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn taxa_considera_a_janela_inteira() {
+    fn rate_considers_entire_window() {
         let mut m = RateMeter::new();
         m.add(8 * 1024);
-        // 8 KiB numa janela de 8 segundos = 1 KiB/s.
-        assert!((m.rate() - 1024.0).abs() < 1.0, "veio {}", m.rate());
+        // 8 KiB over an 8-second window = 1 KiB/s.
+        assert!((m.rate() - 1024.0).abs() < 1.0, "got {}", m.rate());
         assert_eq!(m.total(), 8 * 1024);
 
         m.add(8 * 1024);
@@ -158,18 +157,18 @@ mod tests {
     }
 
     #[test]
-    fn janela_esvazia_com_o_tempo() {
+    fn window_empties_over_time() {
         let mut m = RateMeter::new();
         m.add(1000);
         assert!(m.rate() > 0.0);
-        // Empurra a virada para o passado além da janela inteira.
-        m.virada = Instant::now() - BALDE * (BALDES as u32 + 2);
-        assert_eq!(m.rate(), 0.0, "dados antigos saem da janela");
-        assert_eq!(m.total(), 1000, "o total acumulado permanece");
+        // Push the rollover into the past beyond the entire window.
+        m.rollover = Instant::now() - BUCKET * (BUCKETS as u32 + 2);
+        assert_eq!(m.rate(), 0.0, "old data leaves the window");
+        assert_eq!(m.total(), 1000, "the accumulated total remains");
     }
 
     #[test]
-    fn historico_respeita_a_capacidade() {
+    fn history_respects_capacity() {
         let mut h = History::new(3);
         for v in [1.0, 2.0, 3.0, 4.0] {
             h.push(v);
@@ -178,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn formata_tamanhos_e_tempos() {
+    fn formats_sizes_and_times() {
         assert_eq!(bytes(512), "512 B");
         assert_eq!(bytes(1024), "1.00 KiB");
         assert_eq!(bytes(1536), "1.50 KiB");
@@ -189,7 +188,7 @@ mod tests {
         assert_eq!(rate(2.0 * 1024.0 * 1024.0), "2.00 MiB/s");
 
         assert_eq!(eta(None), "∞");
-        assert_eq!(eta(Some(0)), "agora");
+        assert_eq!(eta(Some(0)), "now");
         assert_eq!(eta(Some(45)), "45s");
         assert_eq!(eta(Some(90)), "1m 30s");
         assert_eq!(eta(Some(3700)), "1h 1m");

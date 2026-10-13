@@ -1,10 +1,12 @@
-//! Formato compacto de endereços — 6 bytes por peer IPv4, 18 por IPv6.
-//! Trackers (BEP-23), DHT (BEP-5) e PEX (BEP-11) usam todos o mesmo layout.
+//! Compact address format — 6 bytes per IPv4 peer, 18 per IPv6.
+//! Trackers (BEP-23), DHT (BEP-5) and PEX (BEP-11) all use the same layout.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 pub fn parse_v4(buf: &[u8]) -> Vec<SocketAddr> {
-    buf.chunks_exact(6)
+    buf.as_chunks::<6>()
+        .0
+        .iter()
         .map(|c| {
             let ip = Ipv4Addr::new(c[0], c[1], c[2], c[3]);
             let port = u16::from_be_bytes([c[4], c[5]]);
@@ -15,7 +17,9 @@ pub fn parse_v4(buf: &[u8]) -> Vec<SocketAddr> {
 }
 
 pub fn parse_v6(buf: &[u8]) -> Vec<SocketAddr> {
-    buf.chunks_exact(18)
+    buf.as_chunks::<18>()
+        .0
+        .iter()
         .map(|c| {
             let mut octets = [0u8; 16];
             octets.copy_from_slice(&c[..16]);
@@ -44,8 +48,8 @@ pub fn encode(addrs: &[SocketAddr]) -> (Vec<u8>, Vec<u8>) {
     (v4, v6)
 }
 
-/// Descarta o que nunca é um endereço de peer válido: porta zero, endereço não
-/// especificado, broadcast e multicast. Trackers devolvem lixo com frequência.
+/// Discards what is never a valid peer address: zero port, unspecified
+/// address, broadcast and multicast. Trackers return garbage frequently.
 pub fn is_usable(addr: &SocketAddr) -> bool {
     if addr.port() == 0 {
         return false;
@@ -56,12 +60,13 @@ pub fn is_usable(addr: &SocketAddr) -> bool {
     }
 }
 
-/// Vale a pena discar para este endereço?
+/// Is it worth dialing this address?
 ///
-/// Mais estrito que [`is_usable`]: exclui loopback e link-local. É uma decisão
-/// de *conexão*, não de parsing — um peer em 127.0.0.1 anunciado por um tracker
-/// remoto é inútil, mas o mesmo endereço vindo de um nó DHT rodando na própria
-/// máquina é legítimo, e descartá-lo na decodificação impediria testes locais.
+/// Stricter than [`is_usable`]: excludes loopback and link-local. It is a
+/// *connection* decision, not a parsing one — a peer at 127.0.0.1 announced
+/// by a remote tracker is useless, but the same address coming from a DHT
+/// node running on the same machine is legitimate, and discarding it during
+/// decoding would prevent local tests.
 pub fn is_routable(addr: &SocketAddr) -> bool {
     if !is_usable(addr) {
         return false;
@@ -77,7 +82,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decodifica_peers_v4() {
+    fn decodes_v4_peers() {
         let buf = [192, 168, 1, 5, 0x1a, 0xe1, 10, 0, 0, 1, 0x00, 0x50];
         let peers = parse_v4(&buf);
         assert_eq!(peers.len(), 2);
@@ -86,26 +91,33 @@ mod tests {
     }
 
     #[test]
-    fn descarta_entradas_invalidas() {
-        // Porta 0 e 0.0.0.0 nunca são endereços de peer.
+    fn discards_invalid_entries() {
+        // Port 0 and 0.0.0.0 are never peer addresses.
         let buf = [1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0x1a, 0xe1];
         assert!(parse_v4(&buf).is_empty());
-        assert_eq!(parse_v4(&[1, 2, 3]).len(), 0, "resto incompleto é ignorado");
+        assert_eq!(
+            parse_v4(&[1, 2, 3]).len(),
+            0,
+            "incomplete remainder is ignored"
+        );
     }
 
     #[test]
-    fn loopback_passa_no_parsing_mas_nao_e_discavel() {
+    fn loopback_passes_parsing_but_is_not_dialable() {
         let local: SocketAddr = "127.0.0.1:6881".parse().unwrap();
-        assert!(is_usable(&local), "decodificar não é decidir");
+        assert!(is_usable(&local), "decoding is not deciding");
         assert!(!is_routable(&local));
 
         assert!(is_routable(&"8.8.8.8:6881".parse().unwrap()));
-        assert!(!is_routable(&"169.254.1.1:6881".parse().unwrap()), "link-local");
+        assert!(
+            !is_routable(&"169.254.1.1:6881".parse().unwrap()),
+            "link-local"
+        );
         assert!(!is_routable(&"[::1]:6881".parse().unwrap()));
     }
 
     #[test]
-    fn round_trip_v4_e_v6() {
+    fn round_trip_v4_and_v6() {
         let addrs: Vec<SocketAddr> = vec![
             "1.2.3.4:6881".parse().unwrap(),
             "[2001:db8::1]:51413".parse().unwrap(),

@@ -1,24 +1,24 @@
-//! Mensagens do peer wire protocol (BEP-3), mais as extensões `fast` (BEP-6)
-//! e `extended` (BEP-10).
+//! Messages of the peer wire protocol (BEP-3), plus the `fast` (BEP-6)
+//! and `extended` (BEP-10) extensions.
 
 use crate::picker::BlockRequest;
 use anyhow::{Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Teto para o tamanho anunciado de uma mensagem. Um bitfield de um torrent de
-/// 8 milhões de peças ainda cabe folgado aqui; qualquer coisa maior é peer
-/// hostil ou stream dessincronizado.
+/// Cap on the announced size of a message. A bitfield for a torrent with
+/// 8 million pieces still fits comfortably here; anything larger means a
+/// hostile peer or a desynchronized stream.
 const MAX_MESSAGE: u32 = 1 << 20;
 
 pub const PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
 
-/// Bits de `reserved` que anunciamos no handshake.
+/// `reserved` bits that we announce in the handshake.
 pub mod reserved {
-    /// BEP-10: protocolo de extensões (habilita ut_metadata e ut_pex).
+    /// BEP-10: extension protocol (enables ut_metadata and ut_pex).
     pub const EXTENSION: (usize, u8) = (5, 0x10);
     /// BEP-6: fast extension.
     pub const FAST: (usize, u8) = (7, 0x04);
-    /// BEP-5: este cliente tem DHT.
+    /// BEP-5: this client supports DHT.
     pub const DHT: (usize, u8) = (7, 0x01);
 }
 
@@ -38,7 +38,7 @@ pub enum Message {
         block: Vec<u8>,
     },
     Cancel(BlockRequest),
-    /// Porta do DHT do peer (BEP-5).
+    /// The peer's DHT port (BEP-5).
     Port(u16),
     // -- fast extension (BEP-6) --
     SuggestPiece(u32),
@@ -77,8 +77,8 @@ impl Message {
     }
 
     pub fn encode(&self, out: &mut Vec<u8>) {
-        let inicio = out.len();
-        out.extend_from_slice(&[0, 0, 0, 0]); // reservado para o tamanho
+        let start = out.len();
+        out.extend_from_slice(&[0, 0, 0, 0]); // reserved for the length
 
         if let Some(id) = self.id() {
             out.push(id);
@@ -110,8 +110,8 @@ impl Message {
             }
         }
 
-        let len = (out.len() - inicio - 4) as u32;
-        out[inicio..inicio + 4].copy_from_slice(&len.to_be_bytes());
+        let len = (out.len() - start - 4) as u32;
+        out[start..start + 4].copy_from_slice(&len.to_be_bytes());
     }
 
     pub fn decode(buf: &[u8]) -> Result<Message> {
@@ -124,10 +124,10 @@ impl Message {
         let u32_at = |off: usize| -> Result<u32> {
             match body.get(off..off + 4) {
                 Some(s) => Ok(u32::from_be_bytes(s.try_into().unwrap())),
-                None => bail!("mensagem id={id} truncada"),
+                None => bail!("message id={id} truncated"),
             }
         };
-        let bloco = || -> Result<BlockRequest> {
+        let block_req = || -> Result<BlockRequest> {
             Ok(BlockRequest {
                 piece: u32_at(0)?,
                 offset: u32_at(4)?,
@@ -142,44 +142,44 @@ impl Message {
             3 => Message::NotInterested,
             4 => Message::Have(u32_at(0)?),
             5 => Message::Bitfield(body.to_vec()),
-            6 => Message::Request(bloco()?),
+            6 => Message::Request(block_req()?),
             7 => Message::Piece {
                 index: u32_at(0)?,
                 begin: u32_at(4)?,
                 block: body.get(8..).unwrap_or_default().to_vec(),
             },
-            8 => Message::Cancel(bloco()?),
+            8 => Message::Cancel(block_req()?),
             9 => {
                 let bytes: [u8; 2] = match body.get(..2) {
                     Some(s) => s.try_into().unwrap(),
-                    None => bail!("mensagem `port` truncada"),
+                    None => bail!("`port` message truncated"),
                 };
                 Message::Port(u16::from_be_bytes(bytes))
             }
             0x0D => Message::SuggestPiece(u32_at(0)?),
             0x0E => Message::HaveAll,
             0x0F => Message::HaveNone,
-            0x10 => Message::RejectRequest(bloco()?),
+            0x10 => Message::RejectRequest(block_req()?),
             0x11 => Message::AllowedFast(u32_at(0)?),
             20 => match body.split_first() {
                 Some((id, payload)) => Message::Extended {
                     id: *id,
                     payload: payload.to_vec(),
                 },
-                None => bail!("mensagem `extended` sem id"),
+                None => bail!("`extended` message without id"),
             },
-            other => bail!("mensagem desconhecida id={other}"),
+            other => bail!("unknown message id={other}"),
         })
     }
 }
 
-/// Lê uma mensagem completa do socket.
+/// Reads a complete message from the socket.
 pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_MESSAGE {
-        bail!("peer anunciou mensagem de {len} bytes");
+        bail!("peer announced a message of {len} bytes");
     }
     if len == 0 {
         return Ok(Message::KeepAlive);
@@ -196,7 +196,7 @@ pub async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, msg: &Message)
     Ok(())
 }
 
-/// Handshake do BitTorrent: 68 bytes fixos.
+/// BitTorrent handshake: a fixed 68 bytes.
 #[derive(Debug, Clone)]
 pub struct Handshake {
     pub reserved: [u8; 8],
@@ -235,7 +235,7 @@ impl Handshake {
 
     pub fn from_bytes(buf: &[u8; 68]) -> Result<Handshake> {
         if buf[0] != 19 || &buf[1..20] != PROTOCOL {
-            bail!("handshake não é BitTorrent");
+            bail!("handshake is not BitTorrent");
         }
         Ok(Handshake {
             reserved: buf[20..28].try_into().unwrap(),
@@ -254,12 +254,12 @@ mod tests {
         let mut buf = Vec::new();
         msg.encode(&mut buf);
         let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
-        assert_eq!(len, buf.len() - 4, "prefixo de tamanho bate com o corpo");
+        assert_eq!(len, buf.len() - 4, "length prefix matches the body");
         assert_eq!(Message::decode(&buf[4..]).unwrap(), msg);
     }
 
     #[test]
-    fn codifica_e_decodifica_todas_as_mensagens() {
+    fn encodes_and_decodes_all_messages() {
         let req = BlockRequest {
             piece: 7,
             offset: 16384,
@@ -296,51 +296,51 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_mensagens_truncadas_e_desconhecidas() {
-        assert!(Message::decode(&[4, 0, 0]).is_err(), "have curto");
-        assert!(Message::decode(&[6, 0, 0, 0, 1]).is_err(), "request curto");
-        assert!(Message::decode(&[20]).is_err(), "extended sem id");
-        assert!(Message::decode(&[99]).is_err(), "id desconhecido");
+    fn rejects_truncated_and_unknown_messages() {
+        assert!(Message::decode(&[4, 0, 0]).is_err(), "short have");
+        assert!(Message::decode(&[6, 0, 0, 0, 1]).is_err(), "short request");
+        assert!(Message::decode(&[20]).is_err(), "extended without id");
+        assert!(Message::decode(&[99]).is_err(), "unknown id");
     }
 
     #[test]
-    fn handshake_anuncia_extensoes() {
+    fn handshake_announces_extensions() {
         let ih = Id20::random();
         let pid = Id20::random();
         let hs = Handshake::new(ih, pid, true);
         let bytes = hs.to_bytes();
-        let lido = Handshake::from_bytes(&bytes).unwrap();
+        let parsed = Handshake::from_bytes(&bytes).unwrap();
 
-        assert_eq!(lido.info_hash, ih);
-        assert_eq!(lido.peer_id, pid);
-        assert!(lido.supports(reserved::EXTENSION));
-        assert!(lido.supports(reserved::FAST));
-        assert!(lido.supports(reserved::DHT));
+        assert_eq!(parsed.info_hash, ih);
+        assert_eq!(parsed.peer_id, pid);
+        assert!(parsed.supports(reserved::EXTENSION));
+        assert!(parsed.supports(reserved::FAST));
+        assert!(parsed.supports(reserved::DHT));
 
-        let sem_dht = Handshake::new(ih, pid, false);
-        assert!(!sem_dht.supports(reserved::DHT));
+        let without_dht = Handshake::new(ih, pid, false);
+        assert!(!without_dht.supports(reserved::DHT));
 
-        let mut ruim = bytes;
-        ruim[1] = b'X';
-        assert!(Handshake::from_bytes(&ruim).is_err());
+        let mut bad = bytes;
+        bad[1] = b'X';
+        assert!(Handshake::from_bytes(&bad).is_err());
     }
 
     #[tokio::test]
-    async fn le_do_socket_em_sequencia() {
-        let mut fluxo = Vec::new();
-        Message::Unchoke.encode(&mut fluxo);
-        Message::KeepAlive.encode(&mut fluxo);
-        Message::Have(9).encode(&mut fluxo);
+    async fn reads_from_socket_in_sequence() {
+        let mut stream = Vec::new();
+        Message::Unchoke.encode(&mut stream);
+        Message::KeepAlive.encode(&mut stream);
+        Message::Have(9).encode(&mut stream);
 
-        let mut cursor = std::io::Cursor::new(fluxo);
+        let mut cursor = std::io::Cursor::new(stream);
         assert_eq!(read_message(&mut cursor).await.unwrap(), Message::Unchoke);
         assert_eq!(read_message(&mut cursor).await.unwrap(), Message::KeepAlive);
         assert_eq!(read_message(&mut cursor).await.unwrap(), Message::Have(9));
-        assert!(read_message(&mut cursor).await.is_err(), "fim do fluxo");
+        assert!(read_message(&mut cursor).await.is_err(), "end of stream");
     }
 
     #[tokio::test]
-    async fn recusa_mensagem_gigante() {
+    async fn rejects_giant_message() {
         let mut cursor = std::io::Cursor::new((MAX_MESSAGE + 1).to_be_bytes().to_vec());
         assert!(read_message(&mut cursor).await.is_err());
     }

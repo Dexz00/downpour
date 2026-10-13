@@ -1,10 +1,10 @@
-//! Camada de disco: traduz índices de peça em escritas e leituras posicionais
-//! sobre os arquivos do torrent.
+//! Disk layer: translates piece indices into positional reads and writes
+//! over the torrent's files.
 //!
-//! As peças cobrem a *concatenação* de todos os arquivos, então uma peça pode
-//! atravessar vários deles. Todas as operações usam I/O posicional (`write_at`
-//! / `seek_write`), o que dispensa mutex nos handles e permite que várias
-//! tarefas gravem em paralelo.
+//! Pieces cover the *concatenation* of all files, so a piece may span
+//! several of them. All operations use positional I/O (`write_at`
+//! / `seek_write`), which avoids mutexes on the handles and allows multiple
+//! tasks to write in parallel.
 
 use crate::bitfield::Bitfield;
 use crate::id::Id20;
@@ -20,12 +20,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct Storage {
     info: Arc<Info>,
     files: Vec<File>,
-    /// Guardado só para as mensagens de erro dizerem qual arquivo falhou.
+    /// Kept only so error messages can say which file failed.
     paths: Vec<PathBuf>,
 }
 
 impl Storage {
-    /// Abre (criando se preciso) todos os arquivos do torrent sob `dest`.
+    /// Opens (creating if needed) all of the torrent's files under `dest`.
     pub fn open(info: Arc<Info>, dest: &Path) -> Result<Storage> {
         let mut files = Vec::with_capacity(info.files.len());
         let mut paths = Vec::with_capacity(info.files.len());
@@ -34,24 +34,28 @@ impl Storage {
             let path = dest.join(&entry.path);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)
-                    .with_context(|| format!("não consegui criar {}", parent.display()))?;
+                    .with_context(|| format!("could not create {}", parent.display()))?;
             }
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
-                // Nunca truncar: o conteúdo que já está aí pode ser um download
-                // anterior que a verificação vai aproveitar.
+                // Never truncate: the content already there may be a previous
+                // download that verification will reuse.
                 .truncate(false)
                 .open(&path)
-                .with_context(|| format!("não consegui abrir {}", path.display()))?;
+                .with_context(|| format!("could not open {}", path.display()))?;
 
-            // Reservar o tamanho final evita fragmentação e falha cedo se não
-            // houver espaço. Só encolhemos nunca: um arquivo maior pode ser um
-            // download anterior que ainda queremos aproveitar no resume.
+            // Reserving the final size avoids fragmentation and fails early if
+            // there is no space. We never shrink: a larger file may be a
+            // previous download we still want to reuse on resume.
             if file.metadata()?.len() < entry.length {
                 file.set_len(entry.length).with_context(|| {
-                    format!("não consegui reservar {} bytes em {}", entry.length, path.display())
+                    format!(
+                        "could not reserve {} bytes in {}",
+                        entry.length,
+                        path.display()
+                    )
                 })?;
             }
             files.push(file);
@@ -64,7 +68,10 @@ impl Storage {
     pub fn write_piece(&self, index: usize, data: &[u8]) -> Result<()> {
         let expected = self.info.piece_size(index) as usize;
         if data.len() != expected {
-            bail!("peça {index}: esperava {expected} bytes, recebi {}", data.len());
+            bail!(
+                "piece {index}: expected {expected} bytes, got {}",
+                data.len()
+            );
         }
         let start = index as u64 * self.info.piece_length as u64;
         self.for_each_segment(start, data.len(), |file_idx, offset, range| {
@@ -79,7 +86,7 @@ impl Storage {
     pub fn read_block(&self, index: usize, offset: u32, len: u32) -> Result<Vec<u8>> {
         let piece_size = self.info.piece_size(index);
         if offset.saturating_add(len) > piece_size {
-            bail!("bloco {offset}+{len} ultrapassa a peça {index} ({piece_size} bytes)");
+            bail!("block {offset}+{len} exceeds piece {index} ({piece_size} bytes)");
         }
         let mut buf = vec![0u8; len as usize];
         let start = index as u64 * self.info.piece_length as u64 + offset as u64;
@@ -89,15 +96,15 @@ impl Storage {
         Ok(buf)
     }
 
-    /// Lê a peça do disco e confere o SHA-1 contra o do metainfo.
+    /// Reads the piece from disk and checks its SHA-1 against the metainfo.
     pub fn verify_piece(&self, index: usize) -> Result<bool> {
         let data = self.read_piece(index)?;
         Ok(Id20(Sha1::digest(&data).into()) == self.info.piece_hashes[index])
     }
 
-    /// Varre o disco inteiro para descobrir o que já existe (resume).
+    /// Scans the entire disk to discover what already exists (resume).
     ///
-    /// `done` é incrementado a cada peça conferida, para a UI mostrar progresso.
+    /// `done` is incremented for each verified piece, so the UI can show progress.
     pub fn verify_all(&self, done: &AtomicUsize) -> Result<Bitfield> {
         let total = self.info.num_pieces();
         let threads = std::thread::available_parallelism()
@@ -118,8 +125,8 @@ impl Storage {
                             if index >= total {
                                 break;
                             }
-                            // Um erro de leitura aqui só significa "não temos
-                            // esta peça" — o download a busca de novo.
+                            // A read error here only means "we don't have
+                            // this piece" — the download will fetch it again.
                             if self.verify_piece(index).unwrap_or(false) {
                                 found.push(index);
                             }
@@ -138,8 +145,8 @@ impl Storage {
         Ok(have)
     }
 
-    /// Percorre os trechos de arquivo que cobrem `len` bytes a partir de
-    /// `start` (offset no fluxo concatenado do torrent).
+    /// Iterates over the file segments covering `len` bytes starting at
+    /// `start` (offset in the torrent's concatenated stream).
     fn for_each_segment(
         &self,
         start: u64,
@@ -153,18 +160,17 @@ impl Storage {
 
         while written < len {
             let Some(entry) = entries.get(index) else {
-                bail!("offset {pos} está além do fim do torrent");
+                bail!("offset {pos} is beyond the end of the torrent");
             };
-            // Arquivos de tamanho zero são válidos e não consomem bytes.
+            // Zero-length files are valid and consume no bytes.
             if entry.length == 0 {
                 index += 1;
                 continue;
             }
             let in_file = pos - entry.offset;
             let take = ((entry.length - in_file) as usize).min(len - written);
-            visit(index, in_file, written..written + take).with_context(|| {
-                format!("erro de I/O em {}", self.paths[index].display())
-            })?;
+            visit(index, in_file, written..written + take)
+                .with_context(|| format!("I/O error in {}", self.paths[index].display()))?;
             written += take;
             pos += take as u64;
             index += 1;
@@ -178,15 +184,15 @@ fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     while done < buf.len() {
         let n = write_some(file, &buf[done..], offset + done as u64)?;
         if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::WriteZero, "escrita parcial"));
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "partial write"));
         }
         done += n;
     }
     Ok(())
 }
 
-/// Lê preenchendo com zeros o que faltar: um arquivo truncado por um download
-/// interrompido deve reprovar na verificação, não abortar a varredura.
+/// Reads, filling whatever is missing with zeros: a file truncated by an
+/// interrupted download must fail verification, not abort the scan.
 fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     let mut done = 0;
     while done < buf.len() {
@@ -226,25 +232,25 @@ mod tests {
     use crate::bencode::{self, Value};
     use crate::metainfo::Metainfo;
 
-    /// Torrent de 3 peças de 4 bytes espalhadas por dois arquivos (10 bytes).
-    fn info_de_teste(dados: &[u8]) -> Arc<Info> {
+    /// Torrent of 3 pieces of 4 bytes spread across two files (10 bytes).
+    fn test_info(data: &[u8]) -> Arc<Info> {
         let piece_len = 4usize;
         let mut pieces = Vec::new();
-        for chunk in dados.chunks(piece_len) {
+        for chunk in data.chunks(piece_len) {
             pieces.extend_from_slice(&Sha1::digest(chunk));
         }
-        let arquivo = |len: i64, nome: &str| {
+        let file = |len: i64, name: &str| {
             Value::dict([
                 ("length", Value::Int(len)),
-                ("path", Value::List(vec![Value::bytes(nome)])),
+                ("path", Value::List(vec![Value::bytes(name)])),
             ])
         };
         let info = Value::dict([
             (
                 "files",
-                Value::List(vec![arquivo(6, "a.bin"), arquivo(4, "b.bin")]),
+                Value::List(vec![file(6, "a.bin"), file(4, "b.bin")]),
             ),
-            ("name", Value::bytes("pacote")),
+            ("name", Value::bytes("bundle")),
             ("piece length", Value::Int(piece_len as i64)),
             ("pieces", Value::Bytes(pieces)),
         ]);
@@ -252,60 +258,60 @@ mod tests {
         Arc::new(Metainfo::from_bytes(&raw).unwrap().info)
     }
 
-    fn temp_dir(nome: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("torrra-test-{nome}"));
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("torrra-test-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     #[test]
-    fn escreve_peca_que_cruza_arquivos() {
-        let dados: Vec<u8> = (0..10u8).collect();
-        let info = info_de_teste(&dados);
+    fn writes_piece_spanning_files() {
+        let data: Vec<u8> = (0..10u8).collect();
+        let info = test_info(&data);
         let dir = temp_dir("cross");
         let st = Storage::open(info.clone(), &dir).unwrap();
 
         for i in 0..info.num_pieces() {
-            let ini = i * info.piece_length as usize;
-            let fim = (ini + info.piece_size(i) as usize).min(dados.len());
-            st.write_piece(i, &dados[ini..fim]).unwrap();
+            let start = i * info.piece_length as usize;
+            let end = (start + info.piece_size(i) as usize).min(data.len());
+            st.write_piece(i, &data[start..end]).unwrap();
         }
 
-        // A peça 1 (bytes 4..8) começa em a.bin e termina em b.bin.
-        assert_eq!(std::fs::read(dir.join("pacote/a.bin")).unwrap(), &dados[..6]);
-        assert_eq!(std::fs::read(dir.join("pacote/b.bin")).unwrap(), &dados[6..]);
-        assert_eq!(st.read_piece(1).unwrap(), &dados[4..8]);
-        assert_eq!(st.read_block(0, 1, 2).unwrap(), &dados[1..3]);
-        assert_eq!(st.info.piece_size(2), 2, "última peça é parcial");
+        // Piece 1 (bytes 4..8) starts in a.bin and ends in b.bin.
+        assert_eq!(std::fs::read(dir.join("bundle/a.bin")).unwrap(), &data[..6]);
+        assert_eq!(std::fs::read(dir.join("bundle/b.bin")).unwrap(), &data[6..]);
+        assert_eq!(st.read_piece(1).unwrap(), &data[4..8]);
+        assert_eq!(st.read_block(0, 1, 2).unwrap(), &data[1..3]);
+        assert_eq!(st.info.piece_size(2), 2, "last piece is partial");
     }
 
     #[test]
-    fn verifica_e_detecta_corrupcao() {
-        let dados: Vec<u8> = (0..10u8).collect();
-        let info = info_de_teste(&dados);
+    fn verifies_and_detects_corruption() {
+        let data: Vec<u8> = (0..10u8).collect();
+        let info = test_info(&data);
         let dir = temp_dir("verify");
         let st = Storage::open(info.clone(), &dir).unwrap();
 
         let done = AtomicUsize::new(0);
-        assert_eq!(st.verify_all(&done).unwrap().count(), 0, "disco vazio");
+        assert_eq!(st.verify_all(&done).unwrap().count(), 0, "empty disk");
         assert_eq!(done.load(Ordering::Relaxed), info.num_pieces());
 
         for i in 0..info.num_pieces() {
-            let ini = i * 4;
-            st.write_piece(i, &dados[ini..ini + info.piece_size(i) as usize])
+            let start = i * 4;
+            st.write_piece(i, &data[start..start + info.piece_size(i) as usize])
                 .unwrap();
         }
         assert!(st.verify_all(&AtomicUsize::new(0)).unwrap().is_complete());
 
         st.write_piece(1, b"XXXX").unwrap();
         assert!(!st.verify_piece(1).unwrap());
-        assert!(st.verify_piece(0).unwrap(), "peça vizinha intacta");
+        assert!(st.verify_piece(0).unwrap(), "neighboring piece intact");
     }
 
     #[test]
-    fn rejeita_tamanhos_invalidos() {
-        let info = info_de_teste(&(0..10u8).collect::<Vec<_>>());
+    fn rejects_invalid_sizes() {
+        let info = test_info(&(0..10u8).collect::<Vec<_>>());
         let st = Storage::open(info, &temp_dir("bounds")).unwrap();
         assert!(st.write_piece(0, b"abc").is_err());
         assert!(st.read_block(0, 3, 2).is_err());

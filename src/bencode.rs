@@ -1,16 +1,16 @@
-//! Bencode: decodificação e codificação.
+//! Bencode: decoding and encoding.
 //!
-//! O decoder registra o intervalo de bytes de cada chave do dicionário raiz.
-//! Isso permite calcular o `info_hash` sobre os bytes originais do dicionário
-//! `info`, em vez de depender de uma re-serialização fiel — arquivos `.torrent`
-//! na natureza contêm chaves fora de ordem e campos que não sobrevivem a um
-//! round-trip.
+//! The decoder records the byte range of each key in the root dictionary.
+//! This allows computing the `info_hash` over the original bytes of the
+//! `info` dictionary, instead of relying on a faithful re-serialization —
+//! `.torrent` files in the wild contain out-of-order keys and fields that
+//! do not survive a round-trip.
 
 use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-/// Profundidade máxima de aninhamento aceita, para conter entrada maliciosa.
+/// Maximum nesting depth accepted, to contain malicious input.
 const MAX_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,16 +55,16 @@ impl Value {
         }
     }
 
-    /// Acesso a uma chave de dicionário. Retorna `None` se `self` não for dict.
+    /// Access to a dictionary key. Returns `None` if `self` is not a dict.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.as_dict().and_then(|d| d.get(key.as_bytes()))
     }
 
-    /// Igual a [`Value::get`], mas erra com uma mensagem útil quando ausente.
+    /// Like [`Value::get`], but errors with a useful message when missing.
     pub fn require(&self, key: &str) -> Result<&Value> {
         match self.get(key) {
             Some(v) => Ok(v),
-            None => bail!("chave bencode ausente: `{key}`"),
+            None => bail!("missing bencode key: `{key}`"),
         }
     }
 
@@ -88,7 +88,7 @@ impl Value {
         Value::Bytes(b.into())
     }
 
-    /// Atalho de construção usado pelos testes para montar torrents de exemplo.
+    /// Construction shortcut used by tests to build example torrents.
     #[cfg(test)]
     pub fn dict(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
         Value::Dict(
@@ -100,27 +100,27 @@ impl Value {
     }
 }
 
-/// Resultado de uma decodificação de nível superior.
+/// Result of a top-level decoding.
 pub struct Decoded {
     pub value: Value,
-    /// Intervalo dos bytes originais de cada chave do dicionário raiz.
+    /// Range of the original bytes of each key in the root dictionary.
     spans: BTreeMap<Vec<u8>, Range<usize>>,
 }
 
 impl Decoded {
-    /// Bytes crus do valor associado a uma chave do dicionário raiz.
+    /// Raw bytes of the value associated with a root dictionary key.
     pub fn raw<'a>(&self, buf: &'a [u8], key: &str) -> Option<&'a [u8]> {
         self.spans.get(key.as_bytes()).map(|r| &buf[r.clone()])
     }
 }
 
-/// Decodifica um valor bencode, exigindo que ele consuma toda a entrada.
+/// Decodes a bencode value, requiring it to consume the entire input.
 pub fn decode(buf: &[u8]) -> Result<Decoded> {
     let mut d = Decoder::new(buf);
     let value = d.value()?;
     if d.pos != buf.len() {
         bail!(
-            "{} bytes restantes após o valor bencode raiz",
+            "{} trailing bytes after the root bencode value",
             buf.len() - d.pos
         );
     }
@@ -130,7 +130,7 @@ pub fn decode(buf: &[u8]) -> Result<Decoded> {
     })
 }
 
-/// Decodifica um valor, tolerando bytes extras depois dele (usado em KRPC/UDP).
+/// Decodes a value, tolerating extra bytes after it (used in KRPC/UDP).
 pub fn decode_prefix(buf: &[u8]) -> Result<(Value, usize)> {
     let mut d = Decoder::new(buf);
     let value = d.value()?;
@@ -157,14 +157,14 @@ impl<'a> Decoder<'a> {
     fn peek(&self) -> Result<u8> {
         match self.buf.get(self.pos) {
             Some(b) => Ok(*b),
-            None => bail!("fim inesperado da entrada bencode"),
+            None => bail!("unexpected end of bencode input"),
         }
     }
 
     fn expect(&mut self, byte: u8) -> Result<()> {
         if self.peek()? != byte {
             bail!(
-                "esperava `{}` na posição {}, encontrei `{}`",
+                "expected `{}` at position {}, found `{}`",
                 byte as char,
                 self.pos,
                 self.buf[self.pos] as char
@@ -176,18 +176,14 @@ impl<'a> Decoder<'a> {
 
     fn value(&mut self) -> Result<Value> {
         if self.depth > MAX_DEPTH {
-            bail!("aninhamento bencode excede {MAX_DEPTH} níveis");
+            bail!("bencode nesting exceeds {MAX_DEPTH} levels");
         }
         match self.peek()? {
             b'i' => self.integer(),
             b'l' => self.list(),
             b'd' => self.dict(),
             b'0'..=b'9' => Ok(Value::Bytes(self.byte_string()?)),
-            other => bail!(
-                "byte inválido `{}` na posição {}",
-                other as char,
-                self.pos
-            ),
+            other => bail!("invalid byte `{}` at position {}", other as char, self.pos),
         }
     }
 
@@ -196,13 +192,13 @@ impl<'a> Decoder<'a> {
         let start = self.pos;
         let end = match self.buf[start..].iter().position(|b| *b == b'e') {
             Some(off) => start + off,
-            None => bail!("inteiro bencode sem terminador na posição {start}"),
+            None => bail!("bencode integer without terminator at position {start}"),
         };
         let text = std::str::from_utf8(&self.buf[start..end])?;
-        // "i-0e" e zeros à esquerda são inválidos pela spec; rejeitamos porque
-        // aceitá-los quebraria a unicidade do info_hash.
+        // "i-0e" and leading zeros are invalid per the spec; we reject them
+        // because accepting them would break info_hash uniqueness.
         if text == "-0" || (text.len() > 1 && text.starts_with('0')) {
-            bail!("inteiro bencode mal formado: `{text}`");
+            bail!("malformed bencode integer: `{text}`");
         }
         let n: i64 = text.parse()?;
         self.pos = end + 1;
@@ -213,13 +209,13 @@ impl<'a> Decoder<'a> {
         let start = self.pos;
         let colon = match self.buf[start..].iter().position(|b| *b == b':') {
             Some(off) => start + off,
-            None => bail!("string bencode sem `:` na posição {start}"),
+            None => bail!("bencode string without `:` at position {start}"),
         };
         let len: usize = std::str::from_utf8(&self.buf[start..colon])?.parse()?;
         let from = colon + 1;
         let to = match from.checked_add(len) {
             Some(t) if t <= self.buf.len() => t,
-            _ => bail!("string bencode de {len} bytes ultrapassa a entrada"),
+            _ => bail!("bencode string of {len} bytes exceeds the input"),
         };
         self.pos = to;
         Ok(self.buf[from..to].to_vec())
@@ -284,8 +280,8 @@ pub fn encode_into(value: &Value, out: &mut Vec<u8>) {
         }
         Value::Dict(map) => {
             out.push(b'd');
-            // BTreeMap já itera em ordem lexicográfica de bytes, que é
-            // exatamente a ordem que a spec exige.
+            // BTreeMap already iterates in lexicographic byte order, which is
+            // exactly the order the spec requires.
             for (k, v) in map {
                 encode_into(&Value::Bytes(k.clone()), out);
                 encode_into(v, out);
@@ -300,7 +296,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decodifica_tipos_basicos() {
+    fn decodes_basic_types() {
         assert_eq!(decode(b"i42e").unwrap().value, Value::Int(42));
         assert_eq!(decode(b"i-13e").unwrap().value, Value::Int(-13));
         assert_eq!(decode(b"4:spam").unwrap().value, Value::bytes("spam"));
@@ -312,21 +308,21 @@ mod tests {
     }
 
     #[test]
-    fn decodifica_dicionario() {
+    fn decodes_dictionary() {
         let d = decode(b"d3:cow3:moo4:spam4:eggse").unwrap();
         assert_eq!(d.value.str_at("cow").as_deref(), Some("moo"));
         assert_eq!(d.value.str_at("spam").as_deref(), Some("eggs"));
     }
 
     #[test]
-    fn preserva_bytes_crus_do_info() {
+    fn preserves_raw_info_bytes() {
         let raw = b"d4:infod6:lengthi3ee4:name2:hie";
         let d = decode(raw).unwrap();
         assert_eq!(d.raw(raw, "info").unwrap(), b"d6:lengthi3ee");
     }
 
     #[test]
-    fn rejeita_entrada_malformada() {
+    fn rejects_malformed_input() {
         assert!(decode(b"i-0e").is_err());
         assert!(decode(b"i03e").is_err());
         assert!(decode(b"5:abc").is_err());
@@ -335,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserva_ordem_das_chaves() {
+    fn round_trip_preserves_key_order() {
         let raw = b"d1:ai1e1:bl1:x1:yee";
         let d = decode(raw).unwrap();
         assert_eq!(encode(&d.value), raw);
