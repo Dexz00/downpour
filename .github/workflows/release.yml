@@ -9,45 +9,135 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Cross linkers/compilers for the Linux targets built on x86_64 runners.
+      - name: Install cross toolchain (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install cross toolchain (Linux musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
 
-      - name: Package (Windows)
+      # -- installers -------------------------------------------------------
+
+      - name: Install Inno Setup (Windows installer builder)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/downpour.exe, LICENSE, README.md dist/
-          Compress-Archive -Path dist/* -DestinationPath "downpour-windows-${{ runner.arch }}.zip"
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
 
-      - name: Package (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Package installer (Windows, Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $arch = if ("${{ matrix.target }}" -like 'aarch64*') { 'arm64' } else { 'x64' }
+          $exe = "$PWD\target\${{ matrix.target }}\release\downpour.exe"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=$version" "/DArch=$arch" "/DSourceExe=$exe" `
+            "/DOutputName=downpour-${{ matrix.target }}-setup" "/O$PWD" `
+            installer/downpour.iss
+
+      - name: Package installer (macOS, .pkg)
+        if: runner.os == 'macOS'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p payload/usr/local/bin
+          cp "target/${{ matrix.target }}/release/downpour" payload/usr/local/bin/
+          chmod +x payload/usr/local/bin/downpour
+          pkgbuild --root payload \
+            --identifier com.github.dexz00.downpour \
+            --version "$version" \
+            --install-location / \
+            "downpour-${{ matrix.target }}.pkg"
+
+      - name: Package installer (Linux, .deb)
+        if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-musl'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "${{ matrix.target }}" in
+            x86_64-*)  deb_arch=amd64 ;;
+            aarch64-*) deb_arch=arm64 ;;
+          esac
+          mkdir -p pkg/DEBIAN pkg/usr/bin pkg/usr/share/doc/downpour
+          cp "target/${{ matrix.target }}/release/downpour" pkg/usr/bin/
+          chmod +x pkg/usr/bin/downpour
+          cp LICENSE pkg/usr/share/doc/downpour/
+          cat > pkg/DEBIAN/control <<EOF
+          Package: downpour
+          Version: $version
+          Section: net
+          Priority: optional
+          Architecture: $deb_arch
+          Maintainer: Dexz00 <157737726+Dexz00@users.noreply.github.com>
+          Homepage: https://github.com/Dexz00/downpour
+          Description: Terminal BitTorrent client written from scratch in Rust
+           Downloads .torrent files and magnet links, with DHT, PEX,
+           rarest-first piece selection and a terminal interface.
+          EOF
+          dpkg-deb --build pkg "downpour_${version}_${deb_arch}.deb"
+
+      # The musl build is the portable/Alpine option and stays a tarball.
+      - name: Package portable tarball (Linux musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           mkdir dist
-          cp target/release/downpour LICENSE README.md dist/
-          tar -czf "downpour-${{ runner.os }}-${{ runner.arch }}.tar.gz" -C dist .
+          cp target/${{ matrix.target }}/release/downpour LICENSE README.md dist/
+          tar -czf "downpour-${{ matrix.target }}.tar.gz" -C dist .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ runner.os }}-${{ runner.arch }}
+          name: binary-${{ matrix.target }}
           path: |
-            *.zip
+            *-setup.exe
+            *.pkg
+            *.deb
             *.tar.gz
 
   release:
