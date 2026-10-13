@@ -376,6 +376,258 @@ mod tests {
             .join("\n")
     }
 
+    /// Screenshot dumper: renders real UI screens to cell dumps under
+    /// `target/screenshots/`, which `assets/render-screenshots.py` paints
+    /// into the README's PNGs. Ignored because it only produces files.
+    #[test]
+    #[ignore]
+    fn dump_screens_for_screenshots() {
+        use crate::tracker::{TrackerState, TrackerStatus};
+
+        let peer = |addr: &str,
+                    client: &str,
+                    progress: f64,
+                    down: f64,
+                    up: f64,
+                    choking: bool,
+                    serving: bool,
+                    flight: usize| PeerInfo {
+            addr: addr.parse().unwrap(),
+            client: client.to_string(),
+            progress,
+            download_rate: down,
+            upload_rate: up,
+            choking_us: choking,
+            interested_in_us: true,
+            we_choke: !serving,
+            in_flight: flight,
+            snubbed: false,
+        };
+        let mib = 1024.0 * 1024.0;
+        let mut snap = test_snapshot();
+        snap.name = "big-buck-bunny-4k".to_string();
+        snap.have_pieces = 1184;
+        snap.total_pieces = 2718;
+        snap.pieces = (0..340)
+            .map(|i| {
+                if i < 147 {
+                    0xff
+                } else if i == 147 {
+                    0xf0
+                } else {
+                    0
+                }
+            })
+            .collect();
+        snap.partials = vec![(1184, 0.62), (1185, 0.31), (1190, 0.84)];
+        snap.downloaded = 2_845_000_000;
+        snap.wanted = 6_540_000_000;
+        snap.total_size = 6_540_000_000;
+        snap.download_rate = 42.6 * mib;
+        snap.upload_rate = 5.9 * mib;
+        snap.uploaded = 912 * 1024 * 1024;
+        snap.eta = Some(88);
+        snap.connected = 38;
+        snap.candidates = 214;
+        snap.seeds_in_swarm = 412;
+        snap.peers_in_swarm = 96;
+        snap.dht_nodes = 214;
+        snap.dht_good = 171;
+        snap.dht_queries = 3412;
+        snap.listen_port = 6881;
+        snap.down_history = (0..64)
+            .map(|i| 18.0 + 14.0 * ((i as f64) * 0.35).sin().abs() + (i % 7) as f64)
+            .collect();
+        snap.up_history = (0..64)
+            .map(|i| 3.0 + 2.0 * ((i as f64) * 0.22).cos().abs())
+            .collect();
+        snap.peers = vec![
+            peer(
+                "185.220.101.4:51413",
+                "qBittorrent 4.6.5",
+                1.0,
+                9.8 * mib,
+                0.4 * mib,
+                false,
+                false,
+                84,
+            ),
+            peer(
+                "91.198.5.77:6881",
+                "Transmission 4.0.6",
+                1.0,
+                8.1 * mib,
+                1.1 * mib,
+                false,
+                true,
+                77,
+            ),
+            peer(
+                "45.148.10.9:40211",
+                "Deluge 2.1.1",
+                0.86,
+                6.4 * mib,
+                0.0,
+                false,
+                false,
+                63,
+            ),
+            peer(
+                "193.32.127.150:8999",
+                "libtorrent 2.0.10",
+                1.0,
+                5.2 * mib,
+                2.3 * mib,
+                false,
+                true,
+                58,
+            ),
+            peer(
+                "88.191.44.20:51413",
+                "µTorrent 3.6.0",
+                0.64,
+                3.7 * mib,
+                0.2 * mib,
+                true,
+                false,
+                0,
+            ),
+            peer(
+                "104.21.66.131:6881",
+                "WebTorrent 2.6.3",
+                0.41,
+                1.9 * mib,
+                0.6 * mib,
+                false,
+                false,
+                25,
+            ),
+        ];
+        snap.files = vec![
+            FileInfo {
+                path: "big-buck-bunny-4k/BigBuckBunny.4K.UHD.mkv".into(),
+                length: 6_120_000_000,
+                downloaded: 2_660_000_000,
+                priority: Priority::High,
+            },
+            FileInfo {
+                path: "big-buck-bunny-4k/subs/en.srt".into(),
+                length: 148_000,
+                downloaded: 148_000,
+                priority: Priority::Normal,
+            },
+            FileInfo {
+                path: "big-buck-bunny-4k/subs/pt-br.srt".into(),
+                length: 152_000,
+                downloaded: 152_000,
+                priority: Priority::Normal,
+            },
+            FileInfo {
+                path: "big-buck-bunny-4k/poster.jpg".into(),
+                length: 890_000,
+                downloaded: 890_000,
+                priority: Priority::Low,
+            },
+            FileInfo {
+                path: "big-buck-bunny-4k/sample.mkv".into(),
+                length: 419_000_000,
+                downloaded: 0,
+                priority: Priority::Skip,
+            },
+        ];
+        snap.trackers = vec![
+            TrackerStatus {
+                url: "udp://tracker.opentrackr.org:1337/announce".into(),
+                tier: 0,
+                state: TrackerState::Ok,
+                message: None,
+                seeders: 412,
+                leechers: 96,
+                peers: 58,
+                next_in: 842,
+            },
+            TrackerStatus {
+                url: "udp://open.stealth.si:80/announce".into(),
+                tier: 0,
+                state: TrackerState::Ok,
+                message: None,
+                seeders: 388,
+                leechers: 121,
+                peers: 41,
+                next_in: 842,
+            },
+            TrackerStatus {
+                url: "https://tracker.bitsearch.to/announce".into(),
+                tier: 1,
+                state: TrackerState::Querying,
+                message: None,
+                seeders: 0,
+                leechers: 0,
+                peers: 0,
+                next_in: 0,
+            },
+            TrackerStatus {
+                url: "udp://exodus.desync.com:6969/announce".into(),
+                tier: 1,
+                state: TrackerState::Failed,
+                message: Some("timed out".into()),
+                seeders: 0,
+                leechers: 0,
+                peers: 0,
+                next_in: 37,
+            },
+        ];
+
+        let dir = std::path::Path::new("target/screenshots");
+        std::fs::create_dir_all(dir).unwrap();
+        let dump = |name: &str, app: &App, snaps: &[Snapshot]| {
+            let mut terminal = Terminal::new(TestBackend::new(116, 34)).unwrap();
+            terminal.draw(|frame| draw(frame, app, snaps)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            let mut out = format!("{} {}\n", buffer.area.width, buffer.area.height);
+            for cell in buffer.content() {
+                out.push_str(&format!(
+                    "{}\t{:?}\t{:?}\t{:?}\n",
+                    cell.symbol(),
+                    cell.fg,
+                    cell.bg,
+                    cell.modifier
+                ));
+            }
+            std::fs::write(dir.join(format!("{name}.cells")), out).unwrap();
+        };
+
+        dump("01-welcome", &App::default(), &[]);
+        let snaps = [snap];
+        for (name, tab) in [
+            ("02-overview", Tab::Overview),
+            ("03-peers", Tab::Peers),
+            ("04-files", Tab::Files),
+            ("05-trackers", Tab::Trackers),
+        ] {
+            dump(
+                name,
+                &App {
+                    tab,
+                    selection: 1,
+                    ..App::default()
+                },
+                &snaps,
+            );
+        }
+        dump(
+            "06-add-torrent",
+            &App {
+                input: Some(InputBox {
+                    text: "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=big-buck-bunny-4k".into(),
+                    error: None,
+                }),
+                ..App::default()
+            },
+            &snaps,
+        );
+    }
+
     #[test]
     fn draws_overview_tab() {
         let screen = render(Tab::Overview, &[test_snapshot()]);

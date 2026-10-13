@@ -31,6 +31,25 @@ Beyond that: rarest-first, endgame, sequential selection to watch while
 downloading, per-file priority, automatic resume, bandwidth limits, and
 SHA-1 verification of every piece before it is written.
 
+## Screenshots
+
+![Overview: speed graphs and the piece map](assets/screenshots/02-overview.png)
+
+<p>
+  <img src="assets/screenshots/01-welcome.png" width="49%" alt="Welcome screen">
+  <img src="assets/screenshots/03-peers.png" width="49%" alt="Peers tab">
+</p>
+<p>
+  <img src="assets/screenshots/04-files.png" width="49%" alt="Files tab with per-file priorities">
+  <img src="assets/screenshots/05-trackers.png" width="49%" alt="Trackers tab and DHT status">
+</p>
+
+![Adding a torrent by pasting a magnet link](assets/screenshots/06-add-torrent.png)
+
+<sub>Screenshots are rendered from the real interface code with sample data;
+regenerate them with `cargo test dump_screens_for_screenshots -- --ignored`
+followed by `python assets/render-screenshots.py`.</sub>
+
 ## Building
 
 ```
