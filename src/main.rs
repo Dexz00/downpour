@@ -142,10 +142,16 @@ fn choose_destination(
 /// notice box, pushing out the actual reason. The file name replaces the
 /// path, and the name goes first if the error does not mention it.
 fn rejection_notice(source: &str, e: &anyhow::Error) -> String {
-    let name = Path::new(source)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| source.to_string());
+    // Split on both separators instead of `Path::file_name`: a Windows path
+    // must still yield its file name when this runs (or is tested) on Unix,
+    // where `\` is not a separator.
+    let name = source
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(source)
+        .to_string();
     let reason = format!("{e:#}").replace(source, &name);
     if reason.contains(&name) {
         reason
